@@ -1,0 +1,16 @@
+[package]
+name = "fluxa"
+version = "0.1.0"
+edition = "2021"
+description = "Behavioral simulator (Kahn process network interpreter) for the Fluxa HLS language"
+
+[lib]
+name = "fluxa"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fluxa"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3

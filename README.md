@@ -1,2 +1,64 @@
-# fluxa
-Fluxa -- 專為 HLS EDA 合成設計的高階語言 
+# fluxa — Fluxa 行為模擬器
+
+像 `iverilog` / `vvp` 之於 Verilog：這是 Fluxa 語言（見〈Fluxa 語言規格 v0.1〉）的直譯器與模擬器，
+零外部依賴，純 Rust。
+
+## 建置與執行
+
+```
+cargo build --release
+./target/release/fluxa examples/fir.fx            # 跑檔案內所有 test
+./target/release/fluxa examples/gemm.fx --stats   # 另外印出每條通道的 token 數與 FIFO 最大佔用
+./target/release/fluxa examples/mac.fx --trace    # 印出每一次 send / recv
+./target/release/fluxa examples/fir.fx --test fir_impulse
+./target/release/fluxa examples/fir.fx --list
+cargo test --release                              # 範例回歸測試（含 100 次死結偵測重複測試）
+```
+
+結束碼：全部通過 0，有失敗 1，載入/語法錯誤 2。
+
+## 模擬模型
+
+- 每個 `task` 是一條執行緒，通道是有界 FIFO（`depth`）：滿了 `send` 阻塞、空了 `recv` 阻塞。
+  這是 Kahn 程序網路，輸出 token 序列與排程、FIFO 深度無關（規格 §3.10 性質 5）。
+- **死結偵測**：所有存活任務都在等待時，報告每個任務卡在哪條通道。
+  深度不足造成的死結（例如測試端不讀輸出、FIFO 填滿）會被如實報出。
+- **通道端點是線性資源**：`spawn` 會轉移端點所有權，之後再用會報錯。
+  任務結束時自動關閉它仍擁有的 `Tx`（end-of-stream），`for x in rx` 因此會自然結束。
+- **位寬安全（動態檢查）**：運算以精確的 120 位元整數進行，在每個有型別的落點
+  （`let` / `carry` / 參數 / 通道元素 / 陣列元素）檢查範圍，溢位即報錯（對應規格 E0301）。
+  窄化必須顯式：`as`、`.to::<T>(round=, ovf=)`、`.sat::<T>()`、`.wrap::<T>()`。
+- **`@reg` 語意**：迭代內讀到舊值，寫入在迭代結束提交，所以 `unroll` 內的移位暫存器寫法與硬體一致。
+- 定點數 `fixed<I,F>`：精確算術（加法對齊小數位、乘法小數位相加），捨入 `trunc|nearest|even`，溢位 `wrap|sat|check`。
+
+## 支援的語言子集
+
+`const`、`fn` / `comb fn` / `comptime fn` / `task`（含 const 泛型）、`test`、
+`let` / `carry` / 賦值（含索引、tuple 欄位）、`for`（範圍、陣列、通道；`pipeline` / `unroll` / `serial` 屬性）、
+`if` / `match` / `return`、`spawn` / `parallel`、`assert`、lambda（供 `.map` 與 `array(n, f)`）、
+位元切片 `x[hi:lo]`、陣列切片 `a[lo..hi]`、定寬字面量 `8'hFF`。
+
+內建：`chan::<T>(depth=)`、`broadcast(rx, n)`、`concat`、`zip`、`array`、`len`、`abs`、`min`、`max`、`print`、
+`design_lowpass(taps=, cutoff=, window=)`；方法：`send` / `recv` / `close`、`map` / `tree_sum` / `sum` / `rev` / `unrolled` / `quantize`、
+`to` / `sat` / `wrap` / `abs` / `xor_reduce` / `popcount`。
+
+`iface`、`schedule`、`use`、`type` 會被解析並略過。
+
+## 刻意不做的事（行為模擬器的邊界）
+
+- **`stage` 層與 `;;`**：週期精確語意需要另一個模擬器，遇到會明確報錯。
+- **靜態檢查**：II 可達性（E0412）、bank 衝突（E0401）、SDF 速率平衡（E0501）屬於編譯器前端，這裡沒有實作；
+  `pipeline(ii = n)` 與 `schedule` 只被解析，不影響行為。
+- **comptime `Graph` 建構器**：用 `array(n, |_| chan::<T>(..))` 加迴圈 `spawn` 可寫出同樣的拓樸（見 `examples/gemm.fx`）。
+- **非阻塞通道操作**（`try_recv` / `empty`）在 task 層被禁止，因為它們會破壞 KPN 的確定性。
+- 一個 task 對應一條 OS 執行緒，數百個 PE 沒問題，數萬個就不適合；`print` 在多任務間的交錯順序不保證。
+
+## 專案結構
+
+```
+src/lexer.rs    詞法分析          src/runtime.rs  排程、通道、死結偵測
+src/parser.rs   語法分析（規格 §2） src/interp.rs   樹走訪直譯器
+src/ast.rs      語法樹            src/value.rs    值、型別、定點數與範圍檢查
+src/lib.rs      load / run_test   src/main.rs     命令列
+examples/       basics fir mac gemm fanout，以及 err_* 四個預期失敗的範例
+```
