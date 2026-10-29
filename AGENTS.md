@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Fluxa: behavioral simulator (Kahn process network interpreter) for the Fluxa HLS language. Pure Rust, **zero external dependencies** — do not add crates. Docs (incl. README) are in Traditional Chinese; README references the spec 《Fluxa 語言規格 v0.1》, whose file is not in this repo.
+Fluxa: behavioral simulator (Kahn process network interpreter) for the Fluxa HLS language. Pure Rust, **zero external dependencies** — do not add crates. Docs (incl. README) are in Traditional Chinese; README references the spec 《Fluxa 語言規格 v0.1》, whose file is not in this repo. Simulator version history: `_doc/v0.1.md`, `_doc/v0.2.md`.
 
 ## Commands
 
@@ -13,6 +13,7 @@ cargo build --release
 ./target/release/fluxa examples/mac.fx --trace      # print every send/recv
 ./target/release/fluxa examples/gemm.fx --stats     # per-channel token counts / max FIFO occupancy
 ./rv32i.sh                                          # RV32I core example: rv32i.fx + smoke.fx + tests_basic.fx
+./rv64.sh                                           # RV64IM core (v0.3 M1): rv64.fx + smoke.fx + tests_basic.fx
 cargo test --release                                # example regression suite
 ```
 
