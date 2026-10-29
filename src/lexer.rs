@@ -56,9 +56,14 @@ fn is_ident_char(c: u8) -> bool {
 }
 
 pub fn lex(src: &str) -> Res<Vec<Token>> {
+    lex_from(src, 0)
+}
+
+/// `line_base`：多檔案載入時，把檔案編號編進行號（file_idx * FILE_STRIDE），錯誤訊息再還原
+pub fn lex_from(src: &str, line_base: u32) -> Res<Vec<Token>> {
     let b = src.as_bytes();
     let mut i = 0usize;
-    let mut line = 1u32;
+    let mut line = line_base + 1;
     let mut line_start = 0usize;
     let mut out: Vec<Token> = Vec::new();
 

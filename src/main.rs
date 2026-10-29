@@ -1,10 +1,10 @@
-use fluxa::{load, run_test, Options};
+use fluxa::{load_many, run_test, Options};
 use std::process::exit;
 
 fn usage() -> ! {
     eprintln!(
         "fluxa — behavioral simulator for the Fluxa HLS language\n\n\
-         usage: fluxa <file.fx> [options]\n\n\
+         usage: fluxa <file.fx>... [options]    (multiple files are merged, like `iverilog a.v b.v`)\n\n\
          options:\n  \
            --test NAME   run only the test named NAME (repeatable)\n  \
            --list        list tests and exit\n  \
@@ -16,7 +16,7 @@ fn usage() -> ! {
 }
 
 fn main() {
-    let mut file: Option<String> = None;
+    let mut files: Vec<String> = Vec::new();
     let mut only: Vec<String> = Vec::new();
     let mut list = false;
     let mut opts = Options { trace: false, stats: false };
@@ -32,18 +32,24 @@ fn main() {
                 eprintln!("fluxa: unknown option `{}`", s);
                 usage()
             }
-            _ => file = Some(a),
+            _ => files.push(a),
         }
     }
-    let file = file.unwrap_or_else(|| usage());
-    let src = match std::fs::read_to_string(&file) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("fluxa: cannot read {}: {}", file, e);
-            exit(2)
+    if files.is_empty() {
+        usage()
+    }
+    let mut srcs = Vec::new();
+    for f in &files {
+        match std::fs::read_to_string(f) {
+            Ok(t) => srcs.push((f.clone(), t)),
+            Err(e) => {
+                eprintln!("fluxa: cannot read {}: {}", f, e);
+                exit(2)
+            }
         }
-    };
-    let prog = match load(&file, &src) {
+    }
+    let file = files.join(" ");
+    let prog = match load_many(&srcs) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{}", e);

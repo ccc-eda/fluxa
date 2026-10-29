@@ -1,7 +1,11 @@
-# fluxa — Fluxa 行為模擬器
+# Fluxa — 專門為 HLS（高階綜合）電路設計的高階硬體設計語言
 
-像 `iverilog` / `vvp` 之於 Verilog：這是 Fluxa 語言（見〈Fluxa 語言規格 v0.1〉）的直譯器與模擬器，
-零外部依賴，純 Rust。
+Fluxa 的核心哲學必須徹底擺脫「軟體思維（馮紐曼架構的順序執行）」的束縛，轉而擁抱「空間思維（Spatial Computing / Dataflow）」。
+
+Fluxa **「融合了 Rust 的嚴謹型別、Go 的通道並行語意、以及硬體描述精確度的全新混合體」**。它不再試圖讓你在寫「軟體」，而是提供一個既有軟體的抽象便利性、又能完全掌控硬體空間與時間（時脈）的折衷點。
+
+本專案是一個 Fluxa 的模擬器，像 `iverilog` / `vvp` 之於 Verilog：這是 Fluxa 語言（見〈Fluxa 語言規格 v0.1〉）的直譯器與模擬器，零外部依賴，純 Rust。
+
 
 ## 建置與執行
 

@@ -176,8 +176,8 @@ impl Shared {
                         if w.error.is_none() {
                             let name = w.task_names.get(&id).cloned().unwrap_or_default();
                             w.error = Some(format!(
-                                "{}:{}: runtime error in task `{}`: {}",
-                                sh.program.file, line, name, m
+                                "{}: runtime error in task `{}`: {}",
+                                sh.program.loc(line), name, m
                             ));
                         }
                         w.shutdown = true;

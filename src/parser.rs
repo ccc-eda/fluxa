@@ -5,7 +5,7 @@
 //! `stage` 層（週期精確）不在行為模擬範圍內，遇到時報錯。
 
 use crate::ast::*;
-use crate::lexer::{lex, FxError, Res, Tok, Token};
+use crate::lexer::{lex_from, FxError, Res, Tok, Token};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -18,7 +18,12 @@ pub struct Parser<'a> {
 }
 
 pub fn parse_program(file: &str, src: &str) -> Res<Program> {
-    let toks = lex(src)?;
+    parse_program_at(file, src, 0)
+}
+
+/// `file_idx`：此檔案在載入清單中的編號（用於還原錯誤位置）
+pub fn parse_program_at(file: &str, src: &str, file_idx: u32) -> Res<Program> {
+    let toks = lex_from(src, file_idx * crate::ast::FILE_STRIDE)?;
     let mut p = Parser { src, toks, pos: 0, no_gt: 0 };
     let mut consts = Vec::new();
     let mut fns: HashMap<String, Arc<FnDecl>> = HashMap::new();
@@ -77,7 +82,7 @@ pub fn parse_program(file: &str, src: &str) -> Res<Program> {
     }
 
     Ok(Program {
-        file: file.to_string(),
+        files: vec![file.to_string()],
         consts_decl: consts,
         fns,
         tests,

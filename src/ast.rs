@@ -219,11 +219,37 @@ pub struct TestDecl {
     pub line: u32,
 }
 
+/// 每檔案行號空間的間隔：行號高位記錄檔案編號（見 `Program::loc`）
+pub const FILE_STRIDE: u32 = 1_000_000;
+
 pub struct Program {
-    pub file: String,
+    pub files: Vec<String>,
     pub consts_decl: Vec<ConstDecl>,
     pub fns: HashMap<String, Arc<FnDecl>>,
     pub tests: Vec<TestDecl>,
     /// 編譯期常數（load 階段由直譯器填入）
     pub consts: RwLock<HashMap<String, Value>>,
+}
+
+impl Program {
+    /// 還原「檔案:行」。行號高位元記錄檔案編號。
+    pub fn loc(&self, line: u32) -> String {
+        let idx = (line / FILE_STRIDE) as usize;
+        let name = self.files.get(idx).map(|s| s.as_str()).unwrap_or("?");
+        format!("{}:{}", name, line % FILE_STRIDE)
+    }
+
+    /// 併入另一個檔案（像 `iverilog a.v b.v`）；函式名稱不可重複
+    pub fn merge(&mut self, other: Program) -> Result<(), String> {
+        self.files.extend(other.files);
+        self.consts_decl.extend(other.consts_decl);
+        self.tests.extend(other.tests);
+        for (k, v) in other.fns {
+            if self.fns.contains_key(&k) {
+                return Err(format!("`{}` is defined in more than one file", k));
+            }
+            self.fns.insert(k, v);
+        }
+        Ok(())
+    }
 }

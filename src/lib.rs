@@ -30,14 +30,28 @@ pub struct TestResult {
     pub stats: String,
 }
 
-/// 解析原始碼並求值編譯期常數
+/// 解析單一檔案並求值編譯期常數
 pub fn load(file: &str, src: &str) -> Result<Arc<Program>, String> {
-    let prog = parser::parse_program(file, src).map_err(|e| format!("{}:{}: syntax error: {}", file, e.line, e.msg))?;
-    let prog = Arc::new(prog);
+    load_many(&[(file.to_string(), src.to_string())])
+}
+
+/// 解析多個檔案（依序），合併後求值編譯期常數。類比 `iverilog a.v b.v`。
+pub fn load_many(files: &[(String, String)]) -> Result<Arc<Program>, String> {
+    let mut prog: Option<Program> = None;
+    for (idx, (file, src)) in files.iter().enumerate() {
+        let p = parser::parse_program_at(file, src, idx as u32).map_err(|e| {
+            format!("{}:{}: syntax error: {}", file, e.line % ast::FILE_STRIDE, e.msg)
+        })?;
+        match prog.as_mut() {
+            None => prog = Some(p),
+            Some(acc) => acc.merge(p).map_err(|m| format!("{}: {}", file, m))?,
+        }
+    }
+    let prog = Arc::new(prog.ok_or_else(|| "no input files".to_string())?);
     let sh = Shared::new(prog.clone(), false);
     let mut it = Interp::new(sh, 0, "const".to_string());
     for c in &prog.consts_decl {
-        let fail = |line: u32, m: String| format!("{}:{}: in const `{}`: {}", file, line, c.name, m);
+        let fail = |line: u32, m: String| format!("{}: in const `{}`: {}", prog.loc(line), c.name, m);
         it.line = c.line;
         let mut v = it.eval(&c.value).map_err(|e| match e {
             RtErr::Msg(l, m) => fail(l, m),
@@ -69,7 +83,7 @@ pub fn run_test(prog: &Arc<Program>, t: &TestDecl, opts: &Options) -> TestResult
     };
     let failure: Option<String> = match r {
         Ok(_) | Err(RtErr::Ret(_)) => child_err,
-        Err(RtErr::Msg(l, m)) => Some(format!("{}:{}: {}", prog.file, l, m)),
+        Err(RtErr::Msg(l, m)) => Some(format!("{}: {}", prog.loc(l), m)),
         Err(RtErr::Deadlock) => deadlock,
         Err(RtErr::Shutdown) => child_err.or(deadlock),
     };
