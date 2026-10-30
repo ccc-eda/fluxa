@@ -104,7 +104,7 @@ test medeleg_warl {
     // medeleg bit 11（M 模式 ecall）不可委派
     let r = run(concat(li(5, 0xFFFF), [csrrw(0, 0x302, 5), csrr(7, 0x302), csrr(8, 0x301), simexit()]));
     assert reg(r, 7) == 0xB3FF;
-    assert reg(r, 8) == 0x8000000000141100;  // misa：RV64 I M S U
+    assert reg(r, 8) == 0x8000000000141101;  // misa：RV64 I M A S U
 }
 
 test csr_privilege_levels {
@@ -391,4 +391,19 @@ test sv39_determinism_tlb_and_depth {
     assert retired(a) == retired(b);
     assert mode(a) == mode(b);
     for i in 0..32 { assert reg(a, i) == reg(b, i), "register differs between configurations"; }
+}
+
+/// AMO 經 Sv39：唯讀頁 → 儲存頁錯誤（15）、未映射 LR → 載入頁錯誤（13）；AMO 設 D
+test sv39_amo {
+    let img = poke(l0(l0(l0(pt(RWXAD), 2, 0, PTE_V | PTE_R | PTE_A), 3, 0x3000, PTE_V | PTE_R | PTE_A),
+                      7, 0, PTE_V | PTE_R | PTE_W | PTE_A), 8, 40);
+    let r1 = run_img(sys(mrec(), [], boot_vm(MST_S, 0), concat(li(10, 0x2008), [amoadd_d(11, 0, 10)])), img);
+    assert reg(r1, 2) == 15;
+    let r2 = run_img(sys(mrec(), [], boot_vm(MST_S, 0), concat(li(10, 0x5000), [lr_d(11, 10)])), img);
+    assert reg(r2, 2) == 13;
+    let r3 = run_img(sys(mrec(), [], boot_vm(MST_S, 0), concat(li(10, 0x7008), concat(li(12, 0x3000), [
+        addi(13, 0, 2), amoadd_d(11, 13, 10), ld(14, 0, 8), ld(15, 12, 56), simexit()]))), img);
+    assert reg(r3, 11) == 40;
+    assert reg(r3, 14) == 42;
+    assert reg(r3, 15) & 0xFF == 0xC7;     // AMO 是儲存：設 A 與 D
 }

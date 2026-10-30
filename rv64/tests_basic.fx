@@ -331,19 +331,7 @@ test bubble_sort_in_memory {
 //  M2：Zicsr 與 M 模式 trap
 // ════════════════════════════════════════════════════════════════════════════
 
-/// 布局：[0] jal → main；handler 緊接在後（mtvec = 4）；
-/// main 開頭自動加 mtvec 設定（li(5,4) + csrw mtvec, x5）。
-fn with_handler(handler: _, main: _) -> [u32; IWORDS] {
-    let setup = concat(li(5, 4), [csrrw(0, 0x305, 5)]);
-    let m = concat(setup, main);
-    concat(concat([jal(0, 4 * (1 + len(handler)))], handler),
-           concat(m, [0; IWORDS - 1 - len(handler) - len(m)]))
-}
-
-/// 記錄型 handler：mepc → x1、mcause → x2、mtval → x3，然後結束模擬
-fn record_handler() -> [u32; 4] {
-    [csrr(1, 0x341), csrr(2, 0x342), csrr(3, 0x343), simexit()]
-}
+// with_handler / record_handler 在 rv64.fx 的 harness 區（各測試檔共用）
 
 // main 的第一條使用者指令位址：setup（li 2 條 + csrw 1 條）= idx 1+hlen+3
 // ecall/ebreak/非法指令都在 main 開頭 → pc = 4 * (hlen + 4)

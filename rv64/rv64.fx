@@ -64,6 +64,7 @@ const C_SFENCE: u5 = 22;              // sfence.vma
 const C_XLATE: u5 = 23;               // Fetch 的翻譯請求（Decode 內部）／回應 token（送 Execute）
 const C_PTW_R: u5 = 24;               // Decode 製造的走訪讀取（LD）token
 const C_PTW_W: u5 = 25;               // Decode 製造的 A/D 回寫（SD）token
+const C_AMO: u5 = 26;                 // A 擴充：LR/SC/AMO*
 
 // Fetch → Decode 的 token 標籤
 const F_INST: u2 = 0;                 // (pc, inst)：一條指令
@@ -79,7 +80,7 @@ const MSTATUS_W: u64 = 0x7E19AA;      // 可寫欄位
 const MSTATUS_XL: u64 = 0xA00000000;  // UXL = SXL = 2
 const SSTATUS_R: u64 = 0x3000C0122;   // sstatus 視窗：SIE SPIE SPP SUM MXR UXL
 const SSTATUS_W: u64 = 0xC0122;
-const MISA: u64 = 0x8000000000141100; // MXL = 2；I M S U
+const MISA: u64 = 0x8000000000141101; // MXL = 2；I M A S U
 
 // PTE 旗標
 const PTE_V: u64 = 0x01;
@@ -207,6 +208,32 @@ fn mret() -> u32 { 0x30200073 }
 fn sret() -> u32 { 0x10200073 }
 fn wfi() -> u32 { 0x10500073 }
 fn sfence_vma(rs1: u5, rs2: u5) -> u32 { enc_r(0x09, rs2, rs1, 0, 0, 0x73) }
+
+// A 擴充：funct5 | aq | rl；f3 = 2（.W）或 3（.D）。aq/rl 在單 hart 行為模擬中沒有作用。
+const AMO: u7 = 0x2F;
+fn enc_amo(f5: u5, rs2: u5, rs1: u5, f3: u3, rd: u5) -> u32 { enc_r(f5 << 2, rs2, rs1, f3, rd, AMO) }
+fn lr_w(rd: u5, rs1: u5) -> u32 { enc_amo(0x02, 0, rs1, 2, rd) }
+fn sc_w(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x03, rs2, rs1, 2, rd) }
+fn amoswap_w(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x01, rs2, rs1, 2, rd) }
+fn amoadd_w(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x00, rs2, rs1, 2, rd) }
+fn amoxor_w(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x04, rs2, rs1, 2, rd) }
+fn amoand_w(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x0C, rs2, rs1, 2, rd) }
+fn amoor_w(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x08, rs2, rs1, 2, rd) }
+fn amomin_w(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x10, rs2, rs1, 2, rd) }
+fn amomax_w(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x14, rs2, rs1, 2, rd) }
+fn amominu_w(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x18, rs2, rs1, 2, rd) }
+fn amomaxu_w(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x1C, rs2, rs1, 2, rd) }
+fn lr_d(rd: u5, rs1: u5) -> u32 { enc_amo(0x02, 0, rs1, 3, rd) }
+fn sc_d(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x03, rs2, rs1, 3, rd) }
+fn amoswap_d(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x01, rs2, rs1, 3, rd) }
+fn amoadd_d(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x00, rs2, rs1, 3, rd) }
+fn amoxor_d(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x04, rs2, rs1, 3, rd) }
+fn amoand_d(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x0C, rs2, rs1, 3, rd) }
+fn amoor_d(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x08, rs2, rs1, 3, rd) }
+fn amomin_d(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x10, rs2, rs1, 3, rd) }
+fn amomax_d(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x14, rs2, rs1, 3, rd) }
+fn amominu_d(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x18, rs2, rs1, 3, rd) }
+fn amomaxu_d(rd: u5, rs2: u5, rs1: u5) -> u32 { enc_amo(0x1C, rs2, rs1, 3, rd) }
 fn fence() -> u32 { 0x0FF0000F }
 fn nop() -> u32 { addi(0, 0, 0) }
 
@@ -295,6 +322,7 @@ comb fn classify(inst: u32) -> u5 {
                     if f7 == 0 || f7 == 0x20 { C_OP32 } else { C_ILLEGAL }   // SRLW/SRAW
                 } else { C_ILLEGAL },
         0x0F => C_FENCE,
+        0x2F => if (f3 == 2 || f3 == 3) && amo_f5_ok(inst[31:27], inst[24:20]) { C_AMO } else { C_ILLEGAL },
         0x73 => if f3 == 0 {
                     if inst == 0x00000073 { C_ECALL }
                     else if inst == 0x00100073 { C_EBREAK }
@@ -310,20 +338,28 @@ comb fn classify(inst: u32) -> u5 {
     }
 }
 
+/// A 擴充的合法 funct5（LR 的 rs2 欄必須為 0）
+comb fn amo_f5_ok(f5: u5, rs2: u5) -> bool {
+    if f5 == 0x02 { rs2 == 0 }
+    else { f5 == 0x03 || f5 == 0x01 || f5 == 0x00 || f5 == 0x04 || f5 == 0x0C || f5 == 0x08
+           || f5 == 0x10 || f5 == 0x14 || f5 == 0x18 || f5 == 0x1C }
+}
+
 // ZICSR 不列入 uses_rs1：暫存器型的相依等待在 Decode 的 ZICSR 分支精確處理
 // （立即型的 rs1 欄是 zimm，不是暫存器，不能等待）
 comb fn uses_rs1(c: u5) -> bool {
     c == C_JALR || c == C_BRANCH || c == C_LOAD || c == C_STORE
         || c == C_OPIMM || c == C_OP || c == C_OPIMM32 || c == C_OP32 || c == C_M || c == C_M32
-        || c == C_SFENCE
+        || c == C_SFENCE || c == C_AMO
 }
 comb fn uses_rs2(c: u5) -> bool {
     c == C_BRANCH || c == C_STORE || c == C_OP || c == C_OP32 || c == C_M || c == C_M32
-        || c == C_SFENCE
+        || c == C_SFENCE || c == C_AMO
 }
 comb fn writes_rd(c: u5) -> bool {
     c == C_LUI || c == C_AUIPC || c == C_JAL || c == C_JALR || c == C_LOAD
         || c == C_OPIMM || c == C_OP || c == C_OPIMM32 || c == C_OP32 || c == C_M || c == C_M32
+        || c == C_AMO
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -439,6 +475,25 @@ comb fn alu_w_imm(f3: u3, alt: bit, a: u64, imm: u64) -> u64 {
     }
 }
 
+/// AMO 的運算（old = 記憶體舊值、src = rs2；.W 時 old 已符號擴展，只比較/寫回低 32 位）
+comb fn amo_alu(f5: u5, w: bool, old: u64, src: u64) -> u64 {
+    let a = if w { old.wrap::<i32>().wrap::<i64>() } else { old.wrap::<i64>() };
+    let b = if w { src.wrap::<i32>().wrap::<i64>() } else { src.wrap::<i64>() };
+    let au = if w { old.wrap::<u32>().wrap::<u64>() } else { old };
+    let bu = if w { src.wrap::<u32>().wrap::<u64>() } else { src };
+    match f5 {
+        0x01 => src,                                     // AMOSWAP
+        0x00 => (old + src).wrap::<u64>(),               // AMOADD
+        0x04 => old ^ src,                               // AMOXOR
+        0x0C => old & src,                               // AMOAND
+        0x08 => old | src,                               // AMOOR
+        0x10 => if a < b { old } else { src },           // AMOMIN
+        0x14 => if a > b { old } else { src },           // AMOMAX
+        0x18 => if au < bu { old } else { src },         // AMOMINU
+        _ => if au > bu { old } else { src },            // AMOMAXU
+    }
+}
+
 comb fn branch_taken(f3: u3, a: u64, b: u64) -> bool {
     match f3 {
         0 => a == b,
@@ -549,7 +604,7 @@ task Fetch(prog: [u32; IWORDS], to_dec: out chan<(u2, u64, u32)>, redirect: in c
             } else if c == C_BRANCH || c == C_JALR {
                 pc = redirect.recv();
             } else if c == C_ECALL || c == C_EBREAK || c == C_MRET || c == C_SRET || c == C_SFENCE
-                      || c == C_ILLEGAL || c == C_ZICSR || c == C_LOAD || c == C_STORE {
+                      || c == C_ILLEGAL || c == C_ZICSR || c == C_LOAD || c == C_STORE || c == C_AMO {
                 pc = redirect.recv();
                 itv = false;
             } else {
@@ -655,6 +710,12 @@ task Decode<const TLBN: u32>(ifq: in chan<(u2, u64, u32)>,
         } else if c == C_STORE {
             va = (x[rs1] + imm_s(inst)).wrap::<u64>();
             if misaligned(fn3, va) { exc = (true, 6, va); } else { acc = 3; }
+        } else if c == C_AMO {
+            // LR 是載入、SC/AMO 是儲存（權限檢查要 W；W 隱含 R）；必須自然對齊，不能碰 MMIO
+            va = x[rs1];
+            let lr = inst[31:27] == 0x02;
+            if misaligned(fn3, va) { exc = (true, if lr { 4 } else { 6 }, va); }
+            else { acc = if lr { 2 } else { 3 }; }
         } else if c == C_ZICSR {
             // 未定義 CSR、特權不足（csr[9:8] > 模式）、寫唯讀 CSR、TVM 下 S 模式碰 satp → 非法指令
             let a = inst[31:20];
@@ -773,7 +834,7 @@ task Decode<const TLBN: u32>(ifq: in chan<(u2, u64, u32)>,
             if !exc.0 {
                 if acc == 2 && (pa >> 3) >= DWORDS {
                     exc = (true, 5, va);
-                } else if acc == 3 && pa != MMIO_OUT && (pa >> 3) >= DWORDS {
+                } else if acc == 3 && (pa != MMIO_OUT || c == C_AMO) && (pa >> 3) >= DWORDS {
                     exc = (true, 7, va);
                 }
             }
@@ -875,7 +936,7 @@ task Decode<const TLBN: u32>(ifq: in chan<(u2, u64, u32)>,
 
 /// 執行：ALU、分支判斷、位址計算。分支與 JALR 把下一個 pc 送回 Fetch。
 task Execute(from_dec: in chan<(u64, u32, u5, u64, u64)>,
-             to_mem: out chan<(u2, u5, u64, u64, u64, u3)>,
+             to_mem: out chan<(u3, u5, u64, u64, u64, u3)>,
              redirect: out chan<u64>) {
     for (pc, inst, c, a, b) in from_dec {
         let rd = inst[11:7];
@@ -883,7 +944,8 @@ task Execute(from_dec: in chan<(u64, u32, u5, u64, u64)>,
         let alt = inst[30:30];
         let link = (pc + 4).wrap::<u64>();
 
-        // kind：0 = 無寫回，1 = 寫回 val，2 = 載入（寫回 Mem 讀到的值），3 = 儲存
+        // kind：0 = 無寫回，1 = 寫回 val，2 = 載入（寫回 Mem 讀到的值），3 = 儲存，
+        //       4 = LR/SC/AMO（val = funct5；rd = x0 時 Mem 照做記憶體操作但不寫回）
         // redir = (要送 redirect, 目標)。所有停等型指令都必須剛好送一個 redirect：
         //   分支/JALR = 目標或 pc+4；trap = 目標；
         //   載入/儲存/ZICSR（C_CSR）= pc+4（走到這裡代表 Decode 檢查後沒有觸發例外）
@@ -908,6 +970,10 @@ task Execute(from_dec: in chan<(u64, u32, u5, u64, u64)>,
             C_STORE => {
                 redir = (true, link);
                 (3, 0, a, b)
+            }
+            C_AMO => {
+                redir = (true, link);
+                (4, inst[31:27].wrap::<u64>(), a, b)   // val = funct5
             }
             C_PTW_R => (2, 0, a, 0),         // 走訪讀取（inst = PTW_LD：rd = 1、f3 = 3）；結果經 wb 回 Decode
             C_PTW_W => (3, 0, a, b),         // A/D 回寫（inst = PTW_SD）
@@ -943,11 +1009,13 @@ task Execute(from_dec: in chan<(u64, u32, u5, u64, u64)>,
 
 /// 記憶體階段：持有資料記憶體（小端、位元組定址，每字 8 位元組）。
 ///   對 MMIO_OUT 的 SW 不寫記憶體，而是送一個 token（低 32 位）到 io 通道。
-task Mem(from_ex: in chan<(u2, u5, u64, u64, u64, u3)>,
+task Mem(from_ex: in chan<(u3, u5, u64, u64, u64, u3)>,
          wb: out chan<(u5, u64)>,
          io: out chan<u32>,
          data: [u64; DWORDS]) {
     let mut dmem: mem<u64, DWORDS> = data;
+    let mut resv: u64 = 0;                   // LR/SC 保留位址
+    let mut resv_v = false;
 
     for (kind, rd, val, addr, sdata, f3) in from_ex {
         let word = addr >> 3;
@@ -986,6 +1054,30 @@ task Mem(from_ex: in chan<(u2, u5, u64, u64, u64, u3)>,
                 let w = dmem[word];
                 dmem[word] = (w & ~(m << sh)) | ((sdata & m) << sh);
             }
+        } else if kind == 4 {
+            // LR/SC/AMO（Decode 已檢查對齊與範圍）。保留集 = 一個位址；
+            // LR 設定、任何 SC（成功或失敗）清除。單 hart 下一般 store 不清除保留（規格允許）。
+            assert word < DWORDS, "atomic address out of range";
+            let m = if f3 == 2 { 0xFFFFFFFF } else { 0xFFFFFFFFFFFFFFFF };
+            let w = dmem[word];
+            let old = if f3 == 2 { (w >> sh)[31:0].wrap::<i32>().wrap::<u64>() } else { w };
+            let f5 = val[4:0];
+            let mut result: u64 = old;
+            if f5 == 0x02 {
+                resv = addr;
+                resv_v = true;
+            } else if f5 == 0x03 {
+                let ok = resv_v && resv == addr;
+                resv_v = false;
+                if ok { dmem[word] = (w & ~(m << sh)) | ((sdata & m) << sh); }
+                result = if ok { 0 } else { 1 };
+            } else {
+                let nv = amo_alu(f5, f3 == 2, old, sdata);
+                dmem[word] = (w & ~(m << sh)) | ((nv & m) << sh);
+            }
+            if rd != 0 {
+                wb.send((rd, result));
+            }
         }
     }
 }
@@ -998,7 +1090,7 @@ task Core<const WBD: u32, const TLBN: u32>(prog: [u32; IWORDS], data: [u64; DWOR
     assert WBD <= 8, "WBD > 8 could overflow the 4-bit scoreboard counters";
     let (f2d_tx, f2d_rx) = chan::<(u2, u64, u32)>(depth = 1);
     let (d2e_tx, d2e_rx) = chan::<(u64, u32, u5, u64, u64)>(depth = 1);
-    let (e2m_tx, e2m_rx) = chan::<(u2, u5, u64, u64, u64, u3)>(depth = 1);
+    let (e2m_tx, e2m_rx) = chan::<(u3, u5, u64, u64, u64, u3)>(depth = 1);
     let (wb_tx, wb_rx)   = chan::<(u5, u64)>(depth = WBD);
     let (rd_tx, rd_rx)   = chan::<u64>(depth = 1);
 
@@ -1053,6 +1145,20 @@ fn run_img_small(p: _, img: [u64; DWORDS]) {
 }
 fn run_with(p: _, d: _) { run_img(p, dimage(d)) }
 fn run(p: _) { run_with(p, []) }
+
+/// 布局：[0] jal → main；handler 緊接在後（mtvec = 4）；
+/// main 開頭自動加 mtvec 設定（li(5,4) + csrw mtvec, x5）。
+fn with_handler(handler: _, main: _) -> [u32; IWORDS] {
+    let setup = concat(li(5, 4), [csrrw(0, 0x305, 5)]);
+    let m = concat(setup, main);
+    concat(concat([jal(0, 4 * (1 + len(handler)))], handler),
+           concat(m, [0; IWORDS - 1 - len(handler) - len(m)]))
+}
+
+/// 記錄型 handler：mepc → x1、mcause → x2、mtval → x3，然後結束模擬
+fn record_handler() -> [u32; 4] {
+    [csrr(1, 0x341), csrr(2, 0x342), csrr(3, 0x343), simexit()]
+}
 
 fn cause(r: _) -> u64 { r.0[D_CAUSE] }
 fn trap_pc(r: _) -> u64 { r.0[D_PC] }
