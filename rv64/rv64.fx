@@ -1,48 +1,97 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  RV64IM 處理器（Fluxa）— v0.3 里程碑 M1
+//  RV64IM 處理器（Fluxa）— v0.3 里程碑 M1–M3
 //
 //   Fetch ──(pc,inst)──► Decode ──(pc,inst,cls,a,b)──► Execute ──► Mem ──► WB
 //
 //   與 rv32i 相同的骨架：四級 task + 深度 1 FIFO、Decode 持暫存器檔與記分板、
-//   分支/JALR 停等 redirect、ECALL 傾印狀態。差異：
-//   • 資料路徑 64 位元；新增 W 型指令（結果符號擴展）與 M 擴充（含 W 型變體）。
+//   分支/JALR 停等 redirect、狀態傾印收尾。差異：
+//   • 資料路徑 64 位元；W 型指令（結果符號擴展）與 M 擴充（含 W 型變體）。
 //   • 精確整數上限 120 位元 ⇒ 64 位元左移分兩段（sll64）、
 //     64×64 乘積用 32 位元學校乘法分塊（mul_hi_lo）。
+//   • M2：Zicsr + M 模式 trap —— CSR 檔在 Decode；所有例外（非法/ecall/ebreak/
+//     未對齊/越界存取/CSR 違例）都在 Decode 偵測，trap 以「跳到 mtvec」的 token
+//     經 Execute 送回 Fetch（與分支同一條 redirect 通道，不需要新通道）；
+//     mret 經同一機制跳回 mepc。結束模擬 = 存取自訂 CSR 0x7C0（simexit）。
+//   • M3：S/U 模式（medeleg 委派、sret、sstatus/sie 視窗、MPRV/SUM/MXR/TVM/TSR）
+//     + Sv39 MMU。翻譯在 Decode（統一 TLB + 硬體頁表走訪）：走訪讀寫以 in-band
+//     token 經 Execute → Mem（自動排在先前的 store 之後），回應走 wbq（先排空記分板，
+//     下一個 wb token 必是走訪結果）。Fetch 有一筆 ITLB，未命中時送 F_XLATE 請 Decode
+//     翻譯 pc 所在頁，經 redirect 收到「實體頁 | 1」或取指頁錯誤的 trap 目標。
 // ════════════════════════════════════════════════════════════════════════════
 
 // ── 參數 ────────────────────────────────────────────────────────────────────
-const IWORDS: u32 = 64;               // 指令記憶體字數（32 位元字）
-const DWORDS: u32 = 64;               // 資料記憶體字數（64 位元字 = 512 位元組）
+const IWORDS: u32 = 256;              // 指令記憶體字數（32 位元字 = 1 KB，實體位址 0 起）
+const DWORDS: u32 = 2048;             // 資料記憶體字數（64 位元字 = 16 KB = 4 頁，放得下三層頁表）
 const MMIO_OUT: u32 = 0x10000000;     // 對此位址 SW → 送一個 token 到 io 通道
 const FETCH_LIMIT: u32 = 3000;        // 看門狗：超過就當作非法指令陷阱
 const MAX_INFLIGHT: u32 = 16;         // 記分板排空迴圈的上界
 const WB_DEPTH: u32 = 8;              // 寫回 FIFO 深度
+const TLB_N: u32 = 8;                 // 統一 TLB 項數（只影響走訪次數，不影響輸出）
 
 // 傾印格式
-const DUMP_LEN: u32 = 36;
+const DUMP_LEN: u32 = 37;
 const D_CAUSE: u32 = 0;               // 0 = ECALL, 1 = EBREAK, 2 = 非法指令／看門狗
 const D_PC: u32 = 1;
 const D_RETIRED: u32 = 2;
 const D_STALLS: u32 = 3;
 const D_X: u32 = 4;                   // x0..x31
+const D_PRIV: u32 = 36;               // 結束時的特權模式（0 = U, 1 = S, 3 = M）
 
 // 指令類別（classify 的回傳值）
-const C_ILLEGAL: u4 = 0;
-const C_LUI: u4 = 1;
-const C_AUIPC: u4 = 2;
-const C_JAL: u4 = 3;
-const C_JALR: u4 = 4;
-const C_BRANCH: u4 = 5;
-const C_LOAD: u4 = 6;
-const C_STORE: u4 = 7;
-const C_OPIMM: u4 = 8;
-const C_OP: u4 = 9;
-const C_OPIMM32: u4 = 10;             // OP-IMM-32（addiw/slliw/srliw/sraiw）
-const C_OP32: u4 = 11;                // OP-32（addw/subw/sllw/srlw/sraw）
-const C_M: u4 = 12;                   // M 擴充（64 位元）
-const C_M32: u4 = 13;                 // M 擴充 W 型（mulw/divw/…）
-const C_FENCE: u4 = 14;
-const C_HALT: u4 = 15;
+const C_ILLEGAL: u5 = 0;
+const C_LUI: u5 = 1;
+const C_AUIPC: u5 = 2;
+const C_JAL: u5 = 3;
+const C_JALR: u5 = 4;
+const C_BRANCH: u5 = 5;
+const C_LOAD: u5 = 6;
+const C_STORE: u5 = 7;
+const C_OPIMM: u5 = 8;
+const C_OP: u5 = 9;
+const C_OPIMM32: u5 = 10;             // OP-IMM-32（addiw/slliw/srliw/sraiw）
+const C_OP32: u5 = 11;                // OP-32（addw/subw/sllw/srlw/sraw）
+const C_M: u5 = 12;                   // M 擴充（64 位元）
+const C_M32: u5 = 13;                 // M 擴充 W 型（mulw/divw/…）
+const C_FENCE: u5 = 14;
+const C_ECALL: u5 = 15;
+const C_EBREAK: u5 = 16;
+const C_MRET: u5 = 17;
+const C_ZICSR: u5 = 18;               // csrrw/s/c 與立即型
+const C_TRAP: u5 = 19;                // Decode 製造的「跳到 trap 目標」token
+const C_CSR: u5 = 20;                 // Decode 製造的「把 a 寫回 rd」token
+const C_SRET: u5 = 21;
+const C_SFENCE: u5 = 22;              // sfence.vma
+const C_XLATE: u5 = 23;               // Fetch 的翻譯請求（Decode 內部）／回應 token（送 Execute）
+const C_PTW_R: u5 = 24;               // Decode 製造的走訪讀取（LD）token
+const C_PTW_W: u5 = 25;               // Decode 製造的 A/D 回寫（SD）token
+
+// Fetch → Decode 的 token 標籤
+const F_INST: u2 = 0;                 // (pc, inst)：一條指令
+const F_XLATE: u2 = 1;                // 請 Decode 翻譯 pc 所在頁
+const F_WDOG: u2 = 2;                 // 看門狗到期
+
+const WDOG_PC: u64 = 0xFFFFFFFF;      // 看門狗收尾時傾印的 pc
+const SIMEXIT_CSR: u12 = 0x7C0;       // 自訂 CSR：任何存取 = 結束模擬（任何特權模式皆可）
+
+// mstatus 欄位：SIE[1] MIE[3] SPIE[5] MPIE[7] SPP[8] MPP[12:11] MPRV[17] SUM[18] MXR[19]
+//               TVM[20] TW[21] TSR[22]；UXL[33:32] = SXL[35:34] = 2（唯讀，64 位元）
+const MSTATUS_W: u64 = 0x7E19AA;      // 可寫欄位
+const MSTATUS_XL: u64 = 0xA00000000;  // UXL = SXL = 2
+const SSTATUS_R: u64 = 0x3000C0122;   // sstatus 視窗：SIE SPIE SPP SUM MXR UXL
+const SSTATUS_W: u64 = 0xC0122;
+const MISA: u64 = 0x8000000000141100; // MXL = 2；I M S U
+
+// PTE 旗標
+const PTE_V: u64 = 0x01;
+const PTE_R: u64 = 0x02;
+const PTE_W: u64 = 0x04;
+const PTE_X: u64 = 0x08;
+const PTE_U: u64 = 0x10;
+const PTE_G: u64 = 0x20;
+const PTE_A: u64 = 0x40;
+const PTE_D: u64 = 0x80;
+const PTW_LD: u32 = 0x3083;           // 走訪讀取 token 借用的編碼：ld x1, 0(x0)（Execute/Mem 取 f3 = 3、rd ≠ 0）
+const PTW_SD: u32 = 0x3023;           // A/D 回寫 token：sd（f3 = 3）
 
 // ════════════════════════════════════════════════════════════════════════════
 //  組譯器
@@ -154,8 +203,27 @@ fn jalr(rd: u5, rs1: u5, off: i12) -> u32 { enc_i(off, rs1, 0, rd, 0x67) }
 
 fn ecall() -> u32 { 0x00000073 }
 fn ebreak() -> u32 { 0x00100073 }
+fn mret() -> u32 { 0x30200073 }
+fn sret() -> u32 { 0x10200073 }
+fn wfi() -> u32 { 0x10500073 }
+fn sfence_vma(rs1: u5, rs2: u5) -> u32 { enc_r(0x09, rs2, rs1, 0, 0, 0x73) }
 fn fence() -> u32 { 0x0FF0000F }
 fn nop() -> u32 { addi(0, 0, 0) }
+
+// Zicsr：CSR 位址是 12 位元無號欄，不能用 enc_i（0xF14 這類超出 i12 的值會被位寬檢查擋下）
+fn enc_csr(csr: u12, rs1: u5, f3: u3, rd: u5) -> u32 {
+    (csr << 20) | (rs1 << 15) | (f3 << 12) | (rd << 7) | 0x73
+}
+fn csrrw(rd: u5, csr: u12, rs1: u5) -> u32 { enc_csr(csr, rs1, 1, rd) }
+fn csrrs(rd: u5, csr: u12, rs1: u5) -> u32 { enc_csr(csr, rs1, 2, rd) }
+fn csrrc(rd: u5, csr: u12, rs1: u5) -> u32 { enc_csr(csr, rs1, 3, rd) }
+fn csrrwi(rd: u5, csr: u12, zimm: u5) -> u32 { enc_csr(csr, zimm, 5, rd) }
+fn csrrsi(rd: u5, csr: u12, zimm: u5) -> u32 { enc_csr(csr, zimm, 6, rd) }
+fn csrrci(rd: u5, csr: u12, zimm: u5) -> u32 { enc_csr(csr, zimm, 7, rd) }
+fn csrr(rd: u5, csr: u12) -> u32 { csrrs(rd, csr, 0) }        // csrr = csrrs with x0
+
+/// 結束模擬：存取自訂 CSR 0x7C0（慣例：測試程式的出口；rv32i 時代的 ecall 現在是真陷阱）
+fn simexit() -> u32 { csrrw(0, SIMEXIT_CSR, 0) }
 
 /// 載入 32 位元常數（lui + addi 補償符號擴展）：結果 = sext32(imm)
 fn li(rd: u5, imm: u32) -> [u32; 2] {
@@ -191,7 +259,7 @@ comb fn imm_j(inst: u32) -> i32 {
 
 /// 指令分類，同時是合法性檢查。注意 RV64 的 SLLI/SRLI/SRAI 移位量為 6 位元，
 /// 合法性要檢查 inst[31:26]（imm[11:6]），不是 7 位元 funct7。
-comb fn classify(inst: u32) -> u4 {
+comb fn classify(inst: u32) -> u5 {
     let op = inst[6:0];
     let f3 = inst[14:12];
     let f7 = inst[31:25];
@@ -227,24 +295,35 @@ comb fn classify(inst: u32) -> u4 {
                     if f7 == 0 || f7 == 0x20 { C_OP32 } else { C_ILLEGAL }   // SRLW/SRAW
                 } else { C_ILLEGAL },
         0x0F => C_FENCE,
-        0x73 => if inst == 0x00000073 || inst == 0x00100073 { C_HALT } else { C_ILLEGAL },
+        0x73 => if f3 == 0 {
+                    if inst == 0x00000073 { C_ECALL }
+                    else if inst == 0x00100073 { C_EBREAK }
+                    else if inst == 0x30200073 { C_MRET }
+                    else if inst == 0x10200073 { C_SRET }
+                    else if inst == 0x10500073 { C_FENCE }      // WFI：無中斷，立即完成（= nop）
+                    else if f7 == 0x09 && inst[11:7] == 0 { C_SFENCE }
+                    else { C_ILLEGAL }
+                } else if f3 == 1 || f3 == 2 || f3 == 3 || f3 == 5 || f3 == 6 || f3 == 7 {
+                    C_ZICSR
+                } else { C_ILLEGAL },
         _ => C_ILLEGAL,
     }
 }
 
-comb fn uses_rs1(c: u4) -> bool {
+// ZICSR 不列入 uses_rs1：暫存器型的相依等待在 Decode 的 ZICSR 分支精確處理
+// （立即型的 rs1 欄是 zimm，不是暫存器，不能等待）
+comb fn uses_rs1(c: u5) -> bool {
     c == C_JALR || c == C_BRANCH || c == C_LOAD || c == C_STORE
         || c == C_OPIMM || c == C_OP || c == C_OPIMM32 || c == C_OP32 || c == C_M || c == C_M32
+        || c == C_SFENCE
 }
-comb fn uses_rs2(c: u4) -> bool {
+comb fn uses_rs2(c: u5) -> bool {
     c == C_BRANCH || c == C_STORE || c == C_OP || c == C_OP32 || c == C_M || c == C_M32
+        || c == C_SFENCE
 }
-comb fn writes_rd(c: u4) -> bool {
+comb fn writes_rd(c: u5) -> bool {
     c == C_LUI || c == C_AUIPC || c == C_JAL || c == C_JALR || c == C_LOAD
         || c == C_OPIMM || c == C_OP || c == C_OPIMM32 || c == C_OP32 || c == C_M || c == C_M32
-}
-comb fn trap_cause(inst: u32) -> u2 {
-    if inst == 0x00000073 { 0 } else if inst == 0x00100073 { 1 } else { 2 }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -372,34 +451,118 @@ comb fn branch_taken(f3: u3, a: u64, b: u64) -> bool {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+//  CSR、特權模式與 Sv39
+// ════════════════════════════════════════════════════════════════════════════
+
+/// 存在的可讀寫 CSR（0x7C0 為 simexit 自訂 CSR）
+comb fn csr_rw(a: u12) -> bool {
+    a == 0x100 || a == 0x104 || a == 0x105 || a == 0x106                     // sstatus sie stvec scounteren
+        || a == 0x140 || a == 0x141 || a == 0x142 || a == 0x143 || a == 0x144 // sscratch sepc scause stval sip
+        || a == 0x180                                                         // satp
+        || a == 0x300 || a == 0x301 || a == 0x302 || a == 0x303 || a == 0x304 || a == 0x305
+        || a == 0x306 || a == 0x340 || a == 0x341 || a == 0x342 || a == 0x343 || a == SIMEXIT_CSR
+}
+/// 唯讀 CSR（寫入 → 非法指令；本實作全部讀為 0）
+comb fn csr_ro(a: u12) -> bool {
+    a == 0xF14 || a == 0xF13 || a == 0xF12 || a == 0xF11 || a == 0x344
+}
+/// 各 CSR 寫入時的合法欄位遮罩（WARL/WPRI）。sstatus/sie/sip/satp 另有專門處理。
+comb fn csr_wmask(a: u12) -> u64 {
+    if a == 0x300 { MSTATUS_W }
+    else if a == 0x301 { 0 }                              // misa：唯讀值（寫入忽略）
+    else if a == 0x302 { 0xB3FF }                         // medeleg：bit 11（M 模式 ecall）恆 0
+    else if a == 0x303 { 0x222 }                          // mideleg：S 層中斷位元
+    else if a == 0x304 { 0xAAA }                          // mie
+    else if a == 0x341 || a == 0x141 { 0xFFFFFFFFFFFFFFFC }   // mepc/sepc：IALIGN=32 → [1:0] = 0
+    else { 0xFFFFFFFFFFFFFFFF }
+}
+comb fn clr(v: u64, m: u64) -> u64 { v & ~m }
+
+/// 位址未對齊：f3[1:0] = log2(存取寬度)（載入的 4/5/6 = LBU/LHU/LWU 同樣適用）
+comb fn misaligned(f3: u3, a: u64) -> bool {
+    (a & ((1 << f3[1:0]) - 1)) != 0
+}
+
+/// TLB 標籤：V[63] G[62] 層級[61:60] ASID[59:44] VPN[26:0]；層級 L 的項目忽略 VPN 低 9L 位
+comb fn tlb_match(t: u64, vpn: u64) -> bool {
+    let sh = 9 * t[61:60];
+    (t[26:0] >> sh) == (vpn >> sh)
+}
+
+/// 葉 PTE 的權限檢查（acc：1 = 取指、2 = 載入、3 = 儲存；dpriv 為有效特權模式）
+comb fn pte_denied(p: u64, acc: u2, dpriv: u2, sum: bit, mxr: bit) -> bool {
+    let r = (p & PTE_R) != 0;
+    let w = (p & PTE_W) != 0;
+    let x = (p & PTE_X) != 0;
+    let u = (p & PTE_U) != 0;
+    let perm = if acc == 1 { x } else if acc == 2 { r || (mxr == 1 && x) } else { w };
+    // U 模式只能碰 U 頁；S 模式碰 U 頁：取指一律不行，載存要 SUM = 1
+    let mode_ok = if dpriv == 0 { u } else { !u || (acc != 1 && sum == 1) };
+    !perm || !mode_ok
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 //  管線
 // ════════════════════════════════════════════════════════════════════════════
 
-/// 取指：持有指令記憶體與 pc。
-task Fetch(prog: [u32; IWORDS], to_dec: out chan<(u32, u32)>, redirect: in chan<u64>) {
+/// 取指：持有指令記憶體（實體位址 0 起）、pc 與一筆 ITLB（pc 頁 → 實體頁）。
+/// ITLB 未命中時送 F_XLATE 請 Decode 翻譯，經 redirect 收回應：
+///   bit 0 = 1 → 實體頁位址 | 1；bit 0 = 0 → 取指頁錯誤，值是 trap 目標（必 4 對齊）。
+/// 翻譯情境（特權模式、satp、頁表）只會被停等型指令改變，所以除了分支/JALR 之外，
+/// 收到任何 redirect 都讓 ITLB 失效。
+task Fetch(prog: [u32; IWORDS], to_dec: out chan<(u2, u64, u32)>, redirect: in chan<u64>) {
     carry pc: u64 = 0;
+    carry itv: bool = false;
+    carry ivp: u64 = 0;
+    carry ipp: u64 = 0;
     serial for _ in 0..FETCH_LIMIT {
-        let word = pc >> 2;
-        let inst = if (pc & 3) == 0 && word < IWORDS { prog[word] } else { 0 };   // 越界／未對齊 → 0 = 非法
-        to_dec.send((pc, inst));
-        let c = classify(inst);
-        if c == C_HALT || c == C_ILLEGAL {
-            return;
+        let mut ok = itv && (pc >> 12) == ivp;
+        if !ok {
+            to_dec.send((F_XLATE, pc, 0));
+            let r = redirect.recv();
+            if (r & 1) == 1 {
+                itv = true;
+                ivp = pc >> 12;
+                ipp = r >> 12;
+                ok = true;
+            } else {
+                pc = r;                              // 取指頁錯誤 → trap 目標（下一輪再翻譯）
+                itv = false;
+            }
         }
-        if c == C_JAL {
-            pc = (pc + imm_j(inst)).wrap::<u64>();
-        } else if c == C_JALR || c == C_BRANCH {
-            pc = redirect.recv();
-        } else {
-            pc = (pc + 4).wrap::<u64>();
+        if ok {
+            let word = ((ipp << 12) | (pc & 0xFFF)) >> 2;
+            let inst = if (pc & 3) == 0 && word < IWORDS { prog[word] } else { 0 };   // 越界／未對齊 → 0 = 非法
+            to_dec.send((F_INST, pc, inst));
+            let c = classify(inst);
+            // simexit（存取自訂 CSR 0x7C0）：停止取指，由 Decode 收尾傾印
+            if c == C_ZICSR && inst[31:20] == SIMEXIT_CSR {
+                return;
+            }
+            // 陷阱類指令：停等 Decode 經 Execute 送回的 trap 目標（mtvec/stvec 或 mepc/sepc）。
+            // 載入/儲存/ZICSR 也停等：它們可能在 Decode 觸發例外，且例外與否要等
+            // Decode 檢查完才知道——不停等的話，Fetch 順序取入的下一條會在陷阱後
+            // 洩漏進管線，被當成新指令執行（甚至觸發第二個陷阱覆蓋 mepc/mtval）。
+            // 沒有觸發例外時，Execute 送回 pc + 4。
+            if c == C_JAL {
+                pc = (pc + imm_j(inst)).wrap::<u64>();
+            } else if c == C_BRANCH || c == C_JALR {
+                pc = redirect.recv();
+            } else if c == C_ECALL || c == C_EBREAK || c == C_MRET || c == C_SRET || c == C_SFENCE
+                      || c == C_ILLEGAL || c == C_ZICSR || c == C_LOAD || c == C_STORE {
+                pc = redirect.recv();
+                itv = false;
+            } else {
+                pc = (pc + 4).wrap::<u64>();
+            }
         }
     }
-    to_dec.send((pc, 0));     // 看門狗到期：以非法指令陷阱收場
+    to_dec.send((F_WDOG, 0, 0));             // 看門狗到期（Decode 以 cause 2 收尾）
 }
 
-/// 解碼 + 暫存器檔 + 記分板
-task Decode(ifq: in chan<(u32, u32)>,
-            to_ex: out chan<(u32, u32, u4, u64, u64)>,
+/// 解碼 + 暫存器檔 + 記分板 + CSR 檔 + 特權模式 + MMU（TLBN 項統一 TLB + 頁表走訪）
+task Decode<const TLBN: u32>(ifq: in chan<(u2, u64, u32)>,
+            to_ex: out chan<(u64, u32, u5, u64, u64)>,
             wbq: in chan<(u5, u64)>,
             dump: out chan<u64>) {
     let mut x: [u64; 32] = [0; 32];
@@ -407,9 +570,36 @@ task Decode(ifq: in chan<(u32, u32)>,
     let mut inflight: u5 = 0;
     let mut retired: u64 = 0;
     let mut stalls: u64 = 0;
+    let mut csr: mem<u64, 4096> = [0; 4096];
+    let mut priv: u2 = 3;                    // 0 = U, 1 = S, 3 = M
+    let mut tlb_tag: mem<u64, TLBN> = [0; TLBN];
+    let mut tlb_pte: mem<u64, TLBN> = [0; TLBN];
+    let mut tlb_next: u32 = 0;               // 輪替取代
+    csr[0x300] = MSTATUS_XL;
+    csr[0x301] = MISA;
 
-    for (pc, inst) in ifq {
-        let c = classify(inst);
+    for (tag, pc, inst) in ifq {
+        let c = if tag == F_XLATE { C_XLATE } else { classify(inst) };
+
+        // 收尾：看門狗（cause 2）或 simexit（cause 0；模擬器掛鉤，任何特權模式皆可）
+        if tag == F_WDOG || (tag == F_INST && c == C_ZICSR && inst[31:20] == SIMEXIT_CSR) {
+            for _ in 0..MAX_INFLIGHT {
+                if inflight != 0 {
+                    let (r, v) = wbq.recv();
+                    x[r] = v;
+                    pend[r] = pend[r] - 1;
+                    inflight = inflight - 1;
+                }
+            }
+            dump.send(if tag == F_WDOG { 2 } else { 0 });
+            dump.send(if tag == F_WDOG { WDOG_PC } else { pc });
+            dump.send(retired);
+            dump.send(stalls);
+            for i in 0..32 { dump.send(x[i]); }
+            dump.send(priv);
+            return;
+        }
+
         let rd = inst[11:7];
         let rs1 = inst[19:15];
         let rs2 = inst[24:20];
@@ -426,36 +616,265 @@ task Decode(ifq: in chan<(u32, u32)>,
                 stalls += 1;
             }
         }
-
-        // 陷阱：排空管線、傾印狀態、結束
-        if c == C_HALT || c == C_ILLEGAL {
+        // ZICSR 暫存器型的相依等待（立即型的 rs1 欄是 zimm，不是暫存器）
+        if c == C_ZICSR && inst[14:14] == 0 {
             for _ in 0..MAX_INFLIGHT {
-                if inflight != 0 {
+                if pend[rs1] != 0 {
                     let (r, v) = wbq.recv();
                     x[r] = v;
                     pend[r] = pend[r] - 1;
                     inflight = inflight - 1;
+                    stalls += 1;
                 }
             }
-            dump.send(trap_cause(inst));
-            dump.send(pc);
-            dump.send(retired);
-            dump.send(stalls);
-            for i in 0..32 { dump.send(x[i]); }
-            return;
         }
 
-        if writes_rd(c) && rd != 0 {
-            pend[rd] = pend[rd] + 1;
-            inflight = inflight + 1;
+        let ms = csr[0x300];
+        let fn3 = inst[14:12];
+        let src = if inst[14:14] == 1 { inst[19:15].wrap::<u64>() } else { x[rs1] };   // ZICSR 運算元
+        let writes = fn3 == 1 || fn3 == 5
+                  || ((fn3 == 2 || fn3 == 3 || fn3 == 6 || fn3 == 7) && src != 0);
+
+        // ── 例外偵測（全部集中在 Decode）──
+        // acc：需要翻譯的存取（0 = 無、1 = 取指、2 = 載入、3 = 儲存），va 為虛擬位址
+        let mut exc: (bool, u64, u64) = (false, 0, 0);   // (觸發, cause, tval)
+        let mut acc: u2 = 0;
+        let mut va: u64 = 0;
+        if c == C_XLATE {
+            acc = 1;
+            va = pc;
+        } else if c == C_ILLEGAL {
+            exc = (true, 2, inst.wrap::<u64>());
+        } else if c == C_ECALL {
+            exc = (true, 8 + priv, 0);               // 8 = U、9 = S、11 = M
+        } else if c == C_EBREAK {
+            exc = (true, 3, 0);
+        } else if c == C_LOAD {
+            va = (x[rs1] + imm_i(inst)).wrap::<u64>();
+            if misaligned(fn3, va) { exc = (true, 4, va); } else { acc = 2; }
+        } else if c == C_STORE {
+            va = (x[rs1] + imm_s(inst)).wrap::<u64>();
+            if misaligned(fn3, va) { exc = (true, 6, va); } else { acc = 3; }
+        } else if c == C_ZICSR {
+            // 未定義 CSR、特權不足（csr[9:8] > 模式）、寫唯讀 CSR、TVM 下 S 模式碰 satp → 非法指令
+            let a = inst[31:20];
+            if (!csr_rw(a) && !csr_ro(a)) || a[9:8] > priv || (writes && csr_ro(a))
+                    || (a == 0x180 && priv == 1 && ms[20:20] == 1) {
+                exc = (true, 2, inst.wrap::<u64>());
+            }
+        } else if c == C_MRET {
+            if priv != 3 { exc = (true, 2, inst.wrap::<u64>()); }
+        } else if c == C_SRET {
+            if priv == 0 || (priv == 1 && ms[22:22] == 1) { exc = (true, 2, inst.wrap::<u64>()); }   // TSR
+        } else if c == C_SFENCE {
+            if priv == 0 || (priv == 1 && ms[20:20] == 1) { exc = (true, 2, inst.wrap::<u64>()); }   // TVM
         }
-        retired += 1;
-        to_ex.send((pc, inst, c, x[rs1], x[rs2]));
+
+        // ── Sv39 翻譯 ──
+        // 載存的有效模式：M 模式且 MPRV = 1 時用 MPP（取指不受 MPRV 影響）
+        let mut pa: u64 = va;
+        if acc != 0 {
+            let dpriv = if acc != 1 && priv == 3 && ms[17:17] == 1 { ms[12:11] } else { priv };
+            let satp = csr[0x180];
+            if dpriv != 3 && satp[63:60] == 8 {
+                let pf: u64 = if acc == 1 { 12 } else if acc == 2 { 13 } else { 15 };
+                let af: u64 = if acc == 1 { 1 } else if acc == 2 { 5 } else { 7 };
+                let asid = satp[59:44];
+                let vpn = va[38:12];
+                let mut fault: u64 = 0;
+                let mut p: u64 = 0;              // 葉 PTE
+                let mut lvl: u2 = 0;             // 葉所在層級（0 = 4KB、1 = 2MB、2 = 1GB）
+                let mut hit = false;
+                if (va >> 38) != 0 && (va >> 38) != 0x3FFFFFF {
+                    fault = pf;                  // 非正規位址：bits 63:39 必須等於 bit 38
+                } else {
+                    for k in 0..TLBN {
+                        let t = tlb_tag[k];
+                        if !hit && t[63:63] == 1 && (t[62:62] == 1 || t[59:44] == asid) && tlb_match(t, vpn) {
+                            hit = true;
+                            p = tlb_pte[k];
+                            lvl = t[61:60];
+                        }
+                    }
+                    // 命中但要寫而 D = 0：當作未命中，由走訪設 D（TLB 永遠不需要寫回 PTE）
+                    if hit && acc == 3 && (p & PTE_D) == 0 { hit = false; }
+                }
+                if fault == 0 && !hit {
+                    // 頁表走訪：先排空記分板，之後下一個 wb token 必是走訪讀取的結果。
+                    // 走訪讀寫以 in-band token 經 Execute → Mem，自動排在先前所有 store 之後。
+                    for _ in 0..MAX_INFLIGHT {
+                        if inflight != 0 {
+                            let (r, v) = wbq.recv();
+                            x[r] = v;
+                            pend[r] = pend[r] - 1;
+                            inflight = inflight - 1;
+                        }
+                    }
+                    let mut base = satp[43:0] << 12;
+                    let mut i: u2 = 2;
+                    let mut done = false;
+                    let mut g: u64 = 0;
+                    let mut paddr: u64 = 0;
+                    for _ in 0..3 {
+                        if !done {
+                            let pte_pa = base + ((vpn >> (9 * i)) & 0x1FF) * 8;
+                            if (pte_pa >> 3) >= DWORDS {
+                                fault = af;      // 頁表項不在實體記憶體內 → 存取錯誤
+                                done = true;
+                            } else {
+                                to_ex.send((pc, PTW_LD, C_PTW_R, pte_pa, 0));
+                                let (_, e) = wbq.recv();
+                                g = g | (e & PTE_G);
+                                if (e & PTE_V) == 0 || ((e & PTE_R) == 0 && (e & PTE_W) != 0) || e[63:54] != 0 {
+                                    fault = pf;  // 無效、W 無 R 的保留編碼、保留位元非 0
+                                    done = true;
+                                } else if (e & (PTE_R | PTE_X)) != 0 {
+                                    p = e;       // 葉
+                                    paddr = pte_pa;
+                                    lvl = i;
+                                    done = true;
+                                } else if i == 0 {
+                                    fault = pf;  // 最底層仍是指標
+                                    done = true;
+                                } else {
+                                    base = e[53:10] << 12;
+                                    i = i - 1;
+                                }
+                            }
+                        }
+                    }
+                    if fault == 0 && lvl > 0 && (p[53:10] & ((1 << (9 * lvl)) - 1)) != 0 {
+                        fault = pf;              // 巨頁的 PPN 未對齊
+                    }
+                    if fault == 0 && !pte_denied(p, acc, dpriv, ms[18:18], ms[19:19]) {
+                        // 硬體設 A（儲存另設 D），只在存取被允許時才做；然後填入 TLB
+                        let np = p | PTE_A | (if acc == 3 { PTE_D } else { 0 });
+                        if np != p {
+                            to_ex.send((pc, PTW_SD, C_PTW_W, paddr, np));
+                        }
+                        p = np;
+                        tlb_tag[tlb_next] = (1 << 63) | (if g != 0 { 1 << 62 } else { 0 })
+                                            | (lvl.wrap::<u64>() << 60) | (asid << 44) | vpn;
+                        tlb_pte[tlb_next] = p;
+                        tlb_next = if tlb_next + 1 == TLBN { 0 } else { tlb_next + 1 };
+                    }
+                }
+                if fault == 0 && pte_denied(p, acc, dpriv, ms[18:18], ms[19:19]) {
+                    fault = pf;
+                }
+                if fault != 0 {
+                    exc = (true, fault, va);
+                } else {
+                    let sh = 12 + 9 * lvl;
+                    pa = ((p[53:10] << 12) >> sh << sh) | (va & ((1 << sh) - 1));
+                }
+            }
+            // 實體位址範圍（取指的範圍由 Fetch 處理：越界取 0 → 非法指令）
+            if !exc.0 {
+                if acc == 2 && (pa >> 3) >= DWORDS {
+                    exc = (true, 5, va);
+                } else if acc == 3 && pa != MMIO_OUT && (pa >> 3) >= DWORDS {
+                    exc = (true, 7, va);
+                }
+            }
+        }
+
+        if exc.0 {
+            // 進入 trap：U/S 模式的例外若 medeleg 對應位元 = 1 → 委派到 S，否則到 M。
+            // tvec 的向量模式只影響中斷；同步例外一律跳 BASE。
+            let cause = exc.1;
+            let mut target: u64 = 0;
+            if priv != 3 && ((csr[0x302] >> cause) & 1) == 1 {
+                csr[0x141] = pc;
+                csr[0x142] = cause;
+                csr[0x143] = exc.2;
+                // SPIE = SIE、SIE = 0、SPP = 原模式
+                csr[0x300] = clr(ms, 0x122) | ((ms & 2) << 4) | (priv.wrap::<u64>() << 8);
+                priv = 1;
+                target = clr(csr[0x105], 3);
+            } else {
+                csr[0x341] = pc;
+                csr[0x342] = cause;
+                csr[0x343] = exc.2;
+                // MPIE = MIE、MIE = 0、MPP = 原模式
+                csr[0x300] = clr(ms, 0x1888) | ((ms & 8) << 4) | (priv.wrap::<u64>() << 11);
+                priv = 3;
+                target = clr(csr[0x305], 3);
+            }
+            to_ex.send((pc, inst, C_TRAP, target, 0));
+        } else if c == C_XLATE {
+            to_ex.send((pc, 0, C_XLATE, ((pa >> 12) << 12) | 1, 0));
+        } else if c == C_MRET {
+            // MIE = MPIE、MPIE = 1、MPP = U；回到 MPP 模式（非 M 時清 MPRV）；pc = mepc
+            let mpp = ms[12:11];
+            csr[0x300] = clr(ms, 0x1888 | (if mpp != 3 { 0x20000 } else { 0 })) | ((ms >> 4) & 8) | 0x80;
+            priv = mpp;
+            retired += 1;
+            to_ex.send((pc, inst, C_TRAP, csr[0x341], 0));
+        } else if c == C_SRET {
+            // SIE = SPIE、SPIE = 1、SPP = U、MPRV = 0；回到 SPP 模式；pc = sepc
+            let spp = ms[8:8];
+            csr[0x300] = clr(ms, 0x20122) | ((ms >> 4) & 2) | 0x20;
+            priv = spp;
+            retired += 1;
+            to_ex.send((pc, inst, C_TRAP, csr[0x141], 0));
+        } else if c == C_SFENCE {
+            // rs1 ≠ x0：只清該虛擬位址（含全域項）；rs2 ≠ x0：只清該 ASID 的非全域項
+            let fvpn = x[rs1][38:12];
+            let fasid = x[rs2][15:0];
+            for k in 0..TLBN {
+                let t = tlb_tag[k];
+                if (rs1 == 0 || tlb_match(t, fvpn)) && (rs2 == 0 || (t[62:62] == 0 && t[59:44] == fasid)) {
+                    tlb_tag[k] = 0;
+                }
+            }
+            retired += 1;
+            to_ex.send((pc, inst, C_TRAP, (pc + 4).wrap::<u64>(), 0));
+        } else if c == C_ZICSR {
+            let a = inst[31:20];
+            // 視窗 CSR：sstatus = mstatus 的 S 欄位、sie = mie & mideleg、sip 讀 0（無中斷）
+            let old = if csr_ro(a) { 0 }
+                      else if a == 0x100 { ms & SSTATUS_R }
+                      else if a == 0x104 { csr[0x304] & csr[0x303] }
+                      else if a == 0x144 { 0 }
+                      else { csr[a] };
+            if writes {
+                let newv = if fn3 == 1 || fn3 == 5 { src }
+                           else if fn3 == 2 || fn3 == 6 { old | src }
+                           else { old & ~src };
+                if a == 0x100 {
+                    csr[0x300] = clr(ms, SSTATUS_W) | (newv & SSTATUS_W);
+                } else if a == 0x104 {
+                    let m = csr[0x303];
+                    csr[0x304] = clr(csr[0x304], m) | (newv & m);
+                } else if a == 0x180 {
+                    if newv[63:60] == 0 || newv[63:60] == 8 { csr[0x180] = newv; }   // 不支援的 MODE：整筆寫入無效
+                } else if a != 0x144 {
+                    // mstatus.MPP 是 WARL：寫入保留值 2 時保持原值
+                    let v = if a == 0x300 && newv[12:11] == 2 { clr(newv, 0x1800) | (old & 0x1800) } else { newv };
+                    csr[a] = clr(old, csr_wmask(a)) | (v & csr_wmask(a));
+                }
+            }
+            if rd != 0 {
+                pend[rd] = pend[rd] + 1;
+                inflight = inflight + 1;
+            }
+            retired += 1;
+            to_ex.send((pc, inst, C_CSR, old, 0));       // 舊值經管線寫回 rd
+        } else {
+            if writes_rd(c) && rd != 0 {
+                pend[rd] = pend[rd] + 1;
+                inflight = inflight + 1;
+            }
+            retired += 1;
+            // 載存：a = 翻譯後的實體位址（Execute 不再自己加立即值）
+            to_ex.send((pc, inst, c, if acc != 0 { pa } else { x[rs1] }, x[rs2]));
+        }
     }
 }
 
 /// 執行：ALU、分支判斷、位址計算。分支與 JALR 把下一個 pc 送回 Fetch。
-task Execute(from_dec: in chan<(u32, u32, u4, u64, u64)>,
+task Execute(from_dec: in chan<(u64, u32, u5, u64, u64)>,
              to_mem: out chan<(u2, u5, u64, u64, u64, u3)>,
              redirect: out chan<u64>) {
     for (pc, inst, c, a, b) in from_dec {
@@ -465,29 +884,56 @@ task Execute(from_dec: in chan<(u32, u32, u4, u64, u64)>,
         let link = (pc + 4).wrap::<u64>();
 
         // kind：0 = 無寫回，1 = 寫回 val，2 = 載入（寫回 Mem 讀到的值），3 = 儲存
+        // redir = (要送 redirect, 目標)。所有停等型指令都必須剛好送一個 redirect：
+        //   分支/JALR = 目標或 pc+4；trap = 目標；
+        //   載入/儲存/ZICSR（C_CSR）= pc+4（走到這裡代表 Decode 檢查後沒有觸發例外）
+        let mut redir: (bool, u64) = (false, 0);
         let (kind, val, addr, sdata) = match c {
             C_LUI => (1, imm_u(inst).wrap::<i32>().wrap::<u64>(), 0, 0),
             C_AUIPC => (1, (pc + imm_u(inst).wrap::<i32>()).wrap::<u64>(), 0, 0),
             C_JAL => (1, link, 0, 0),
             C_JALR => {
-                redirect.send(((a + imm_i(inst)).wrap::<u64>()) & 0xFFFFFFFFFFFFFFFE);
+                redir = (true, ((a + imm_i(inst)).wrap::<u64>()) & 0xFFFFFFFFFFFFFFFE);
                 (1, link, 0, 0)
             }
             C_BRANCH => {
                 let taken = branch_taken(f3, a, b);
-                redirect.send(if taken { (pc + imm_b(inst)).wrap::<u64>() } else { link });
+                redir = (true, if taken { (pc + imm_b(inst)).wrap::<u64>() } else { link });
                 (0, 0, 0, 0)
             }
-            C_LOAD => (2, 0, (a + imm_i(inst)).wrap::<u64>(), 0),
-            C_STORE => (3, 0, (a + imm_s(inst)).wrap::<u64>(), b),
+            C_LOAD => {
+                redir = (true, link);
+                (2, 0, a, 0)                 // a = Decode 翻譯好的實體位址
+            }
+            C_STORE => {
+                redir = (true, link);
+                (3, 0, a, b)
+            }
+            C_PTW_R => (2, 0, a, 0),         // 走訪讀取（inst = PTW_LD：rd = 1、f3 = 3）；結果經 wb 回 Decode
+            C_PTW_W => (3, 0, a, b),         // A/D 回寫（inst = PTW_SD）
+            C_XLATE => {
+                redir = (true, a);           // a = 實體頁 | 1（取指翻譯回應）
+                (0, 0, 0, 0)
+            }
             C_OPIMM => (1, alu(f3, if f3 == 5 { alt } else { 0 }, a, imm_i(inst).wrap::<u64>()), 0, 0),
             C_OP => (1, alu(f3, alt, a, b), 0, 0),
             C_OPIMM32 => (1, alu_w_imm(f3, alt, a, imm_i(inst).wrap::<u64>()), 0, 0),
             C_OP32 => (1, alu_w(f3, alt, a, b), 0, 0),
             C_M => (1, alu_m(f3, a, b), 0, 0),
             C_M32 => (1, alu_m_w(f3, a, b), 0, 0),
+            C_TRAP => {
+                redir = (true, a);           // a = trap 目標 pc（mtvec 向量或 mepc）
+                (0, 0, 0, 0)
+            }
+            C_CSR => {
+                redir = (true, link);
+                (1, a, 0, 0)                 // a = CSR 舊值 → 寫回 rd
+            }
             _ => (0, 0, 0, 0),
         };
+        if redir.0 {
+            redirect.send(redir.1);
+        }
 
         // 目的暫存器是 x0 的指令不寫回（Decode 的記分板也不會為它計數）
         let k = if (kind == 1 || kind == 2) && rd == 0 { 0 } else { kind };
@@ -546,17 +992,18 @@ task Mem(from_ex: in chan<(u2, u5, u64, u64, u64, u3)>,
 
 /// 頂層：把四個階段用 FIFO 接起來。
 /// WBD = 寫回 FIFO 深度。太小會讓 Mem 在 Decode 來不及排空時卡住 → 死結。
-task Core<const WBD: u32>(prog: [u32; IWORDS], data: [u64; DWORDS],
+/// TLBN = TLB 項數：只影響走訪次數，正確 fence 的程式輸出與它無關（確定性測試的對象）。
+task Core<const WBD: u32, const TLBN: u32>(prog: [u32; IWORDS], data: [u64; DWORDS],
                           io: out chan<u32>, dump: out chan<u64>) {
     assert WBD <= 8, "WBD > 8 could overflow the 4-bit scoreboard counters";
-    let (f2d_tx, f2d_rx) = chan::<(u32, u32)>(depth = 1);
-    let (d2e_tx, d2e_rx) = chan::<(u32, u32, u4, u64, u64)>(depth = 1);
+    let (f2d_tx, f2d_rx) = chan::<(u2, u64, u32)>(depth = 1);
+    let (d2e_tx, d2e_rx) = chan::<(u64, u32, u5, u64, u64)>(depth = 1);
     let (e2m_tx, e2m_rx) = chan::<(u2, u5, u64, u64, u64, u3)>(depth = 1);
     let (wb_tx, wb_rx)   = chan::<(u5, u64)>(depth = WBD);
     let (rd_tx, rd_rx)   = chan::<u64>(depth = 1);
 
     spawn Fetch(prog, f2d_tx, rd_rx);
-    spawn Decode(f2d_rx, d2e_tx, wb_rx, dump);
+    spawn Decode::<TLBN>(f2d_rx, d2e_tx, wb_rx, dump);
     spawn Execute(d2e_rx, e2m_tx, rd_tx);
     spawn Mem(e2m_rx, wb_tx, io, data);
 }
@@ -580,18 +1027,31 @@ fn dimage32(d: _) -> [u64; DWORDS] {
     out
 }
 
-fn run_with(p: _, d: _) {
-    // io 深度：MMIO 寫入次數 ≤ 已發射指令數 ≤ FETCH_LIMIT，
-    // 且測試端會先把 dump 收完才收 io，所以 io 必須裝得下全部輸出，否則管線未到陷阱就卡死。
-    let (io_tx, io_rx) = chan::<u32>(depth = FETCH_LIMIT);
-    let (dump_tx, dump_rx) = chan::<u64>(depth = 40);
-    spawn Core::<WB_DEPTH>(image(p), dimage(d), io_tx, dump_tx);
+/// 收集傾印與 MMIO 輸出
+fn collect(io_rx: _, dump_rx: _) {
     let mut regs: [u64; DUMP_LEN] = [0; DUMP_LEN];
     for i in 0..DUMP_LEN { regs[i] = dump_rx.recv(); }
     let mut out = [];
     for v in io_rx { out = concat(out, [v]); }       // Mem 結束時關閉 io
     (regs, out)
 }
+
+// io 深度：MMIO 寫入次數 ≤ 已發射指令數 ≤ FETCH_LIMIT，
+// 且測試端會先把 dump 收完才收 io，所以 io 必須裝得下全部輸出，否則管線未到陷阱就卡死。
+fn run_img(p: _, img: [u64; DWORDS]) {
+    let (io_tx, io_rx) = chan::<u32>(depth = FETCH_LIMIT);
+    let (dump_tx, dump_rx) = chan::<u64>(depth = 40);
+    spawn Core::<WB_DEPTH, TLB_N>(image(p), img, io_tx, dump_tx);
+    collect(io_rx, dump_rx)
+}
+/// 同上，但 TLB 只有 1 項、寫回深度 2（確定性測試：輸出必須與預設設定完全相同）
+fn run_img_small(p: _, img: [u64; DWORDS]) {
+    let (io_tx, io_rx) = chan::<u32>(depth = FETCH_LIMIT);
+    let (dump_tx, dump_rx) = chan::<u64>(depth = 40);
+    spawn Core::<2, 1>(image(p), img, io_tx, dump_tx);
+    collect(io_rx, dump_rx)
+}
+fn run_with(p: _, d: _) { run_img(p, dimage(d)) }
 fn run(p: _) { run_with(p, []) }
 
 fn cause(r: _) -> u64 { r.0[D_CAUSE] }
@@ -599,4 +1059,5 @@ fn trap_pc(r: _) -> u64 { r.0[D_PC] }
 fn retired(r: _) -> u64 { r.0[D_RETIRED] }
 fn stalls(r: _) -> u64 { r.0[D_STALLS] }
 fn reg(r: _, n: u32) -> u64 { r.0[D_X + n] }
+fn mode(r: _) -> u64 { r.0[D_PRIV] }
 fn output(r: _) { r.1 }

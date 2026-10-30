@@ -5,7 +5,7 @@ test alu_register_ops {
     let r = run(concat(concat(li(1, 0xFFFFFFF6), [addi(2, 0, 3)]), [
         add(3, 1, 2), sub(4, 1, 2), sll(5, 1, 2), slt(6, 1, 2), sltu(7, 1, 2),
         xor(8, 1, 2), srl(9, 1, 2), sra(10, 1, 2), or(11, 1, 2), and(12, 1, 2),
-        ecall()]));
+        simexit()]));
     assert cause(r) == 0;
     assert reg(r, 3) == 0xFFFFFFFFFFFFFFF9;   // -7
     assert reg(r, 4) == 0xFFFFFFFFFFFFFFF3;   // -13
@@ -33,7 +33,7 @@ test alu_immediate_ops {
         srli(10, 9, 63),                    // 1
         srai(11, 9, 63),                    // -1
         srai(12, 1, 4),                     // -1
-        ecall()]);
+        simexit()]);
     assert reg(r, 2) == 0;
     assert reg(r, 3) == 1;
     assert reg(r, 4) == 0;
@@ -57,7 +57,7 @@ test shift_shamt_mask {
         srli(5, 1, 33),                     // 立即移位允許到 63
         srai(6, 1, 33),
         slli(7, 1, 40),                     // 2^40
-        ecall()]);
+        simexit()]);
     assert reg(r, 3) == 0x200000000;
     assert reg(r, 4) == 2;
     assert reg(r, 5) == 0;
@@ -70,7 +70,7 @@ test lui_auipc_sext {
     let r = run([
         lui(1, 0x80000),                    // 0x80000000 sext
         auipc(2, 0x80000),                  // 此指令在 pc = 4
-        ecall()]);
+        simexit()]);
     assert reg(r, 1) == 0xFFFFFFFF80000000;
     assert reg(r, 2) == 0xFFFFFFFF80000004;
 }
@@ -82,7 +82,7 @@ test w_arith {
         concat(li(4, 0x80000000), [         // x4 = 0xFFFFFFFF80000000
         addiw(5, 4, -1),                    // 0x7FFFFFFF（正）
         subw(6, 4, 2),                      // 0x7FFFFFFF
-        ecall()]))));
+        simexit()]))));
     assert reg(r, 3) == 0xFFFFFFFF80000000;
     assert reg(r, 5) == 0x7FFFFFFF;
     assert reg(r, 6) == 0x7FFFFFFF;
@@ -96,7 +96,7 @@ test w_shifts_sext {
         slli(3, 1, 31),                     // 非 W 型：不擴展
         srliw(5, 4, 16),                    // 0x8000（正）
         sraiw(6, 4, 16),                    // 0xFFFF8000 → sext
-        ecall()]));
+        simexit()]));
     assert reg(r, 2) == 0xFFFFFFFF80000000;
     assert reg(r, 3) == 0x80000000;
     assert reg(r, 5) == 0x8000;
@@ -111,7 +111,7 @@ test w_shifts_shamt_mask {
         srlw(4, 1, 2),                      // 0x40000000
         sra(5, 1, 2),                       // sh = 33：-2^31 >>a 33 = -1
         srl(6, 1, 2),                       // 0xFFFFFFFF80000000 >>u 33 = 0x7FFFFFFF
-        ecall()]));
+        simexit()]));
     assert reg(r, 3) == 0xFFFFFFFFC0000000;
     assert reg(r, 4) == 0x40000000;
     assert reg(r, 5) == 0xFFFFFFFFFFFFFFFF;
@@ -131,7 +131,7 @@ test mul_high {
         mul(8, 7, 7),                       // (-1)^2 mod 2^64 = 1
         mulh(9, 7, 7),                      // 0
         mulhsu(10, 7, 2),                   // -1 × 2 = -2 → 高半 -1
-        ecall()]));
+        simexit()]));
     assert reg(r, 3) == 0;
     assert reg(r, 4) == 1;
     assert reg(r, 5) == 0xFFFFFFFFFFFFFFFF;
@@ -150,7 +150,7 @@ test div_rem {
         addi(5, 0, -100),
         div(6, 5, 2),                       // -14（向零捨入，不是 floor 的 -15）
         rem(7, 5, 2),                       // -2（餘數符號隨被除數）
-        ecall()]);
+        simexit()]);
     assert reg(r, 3) == 14;
     assert reg(r, 4) == 2;
     assert reg(r, 6) == 0xFFFFFFFFFFFFFFF2;
@@ -173,7 +173,7 @@ test div_edge {
         addi(10, 0, -1), addi(11, 0, 3),
         divu(12, 10, 11),                   // 0xFFFF...FF / 3
         remu(13, 10, 11),                   // 0
-        ecall()]));
+        simexit()]));
     assert reg(r, 3) == 0x8000000000000000;
     assert reg(r, 4) == 0;
     assert reg(r, 5) == 0xFFFFFFFFFFFFFFFF;
@@ -192,7 +192,7 @@ test mulw_divw {
         addi(4, 0, 100), addi(5, 0, 7),
         divw(6, 4, 5),                      // 14
         remw(7, 4, 5),                      // 2
-        ecall()]));
+        simexit()]));
     assert reg(r, 3) == 0xFFFFFFFFFFFFFFFE;
     assert reg(r, 6) == 14;
     assert reg(r, 7) == 2;
@@ -209,7 +209,7 @@ test divw_edge {
         concat(li(14, 0xFFFFFFFF), [        // x14 = 0xFFFFFFFFFFFFFFFF（a32 = 0xFFFFFFFF）
         divuw(8, 14, 7),                    // 0xFFFFFFFF / 3 = 0x55555555（正）
         remuw(9, 14, 7),                    // 0
-        ecall()]))));
+        simexit()]))));
     assert reg(r, 3) == 0xFFFFFFFF80000000;
     assert reg(r, 4) == 0;
     assert reg(r, 5) == 0xFFFFFFFFFFFFFFFF;
@@ -232,7 +232,7 @@ test li64_and_load_store {
         sw(9, 0, 8),                        // 只存低 32 位
         lw(10, 0, 8),                       // 0x80000000 → sext → 負
         lwu(11, 0, 8),                      // 0x80000000（零擴展）
-        ecall()]))));
+        simexit()]))));
     assert reg(r, 1) == 0x1122334455667788;
     assert reg(r, 2) == 0x1122334455667788;
     assert reg(r, 3) == 0x11223344;
@@ -250,7 +250,7 @@ test partial_stores_merge {
         sh(2, 0, 10),                       // 第 2 個字的高 16 位元
         ld(3, 0, 0),
         ld(4, 0, 8),
-        ecall()])));
+        simexit()])));
     assert reg(r, 3) == 0x0000AA0000000000;
     assert reg(r, 4) == 0x00000000BEEF0000;   // byte10-11 = 第 2 個字的 bits[31:16]
 }
@@ -259,7 +259,7 @@ test jal_and_jalr {
     let r = run([
         jal(1, 12),                         //  0: 呼叫 → 12，x1 = 4
         addi(5, 0, 7),                      //  4: 返回後
-        ecall(),                            //  8
+        simexit(),                          //  8
         addi(6, 0, 9),                      // 12: 被呼叫者
         jalr(0, 1, 0)]);                    // 16: 返回
     assert cause(r) == 0;
@@ -281,7 +281,7 @@ test all_six_branches {
         bge(1, 2, 8),  addi(10, 10, 1),
         bltu(1, 2, 8), addi(10, 10, 1),
         bgeu(1, 2, 8), addi(10, 10, 1),
-        ecall()]);
+        simexit()]);
     assert reg(r, 10) == 3;
 }
 
@@ -295,7 +295,7 @@ test fibonacci_via_mmio {
         addi(2, 4, 0),
         addi(3, 3, -1),
         bne(3, 0, -20),
-        ecall()]);
+        simexit()]);
     assert output(r) == [0, 1, 1, 2, 3, 5, 8, 13, 21, 34];
 }
 
@@ -321,36 +321,170 @@ test bubble_sort_in_memory {
         sw(6, 10, 0),                       // 68
         addi(4, 4, 1),                      // 72
         blt(4, 2, -16),                     // 76 → out
-        ecall()],                           // 80
+        simexit()],                           // 80
         dimage32([5, 0xFFFFFFFD, 9, 0, 0xFFFFFFF9, 2, 2, 100]));     // 5, -3, 9, 0, -7, 2, 2, 100
     assert cause(r) == 0;
     assert output(r) == [0xFFFFFFF9, 0xFFFFFFFD, 0, 2, 2, 5, 9, 100];
 }
 
-test trap_flavors {
-    let r1 = run([addi(1, 0, 3), ebreak()]);
-    assert cause(r1) == 1;
-    assert trap_pc(r1) == 4;
-    assert reg(r1, 1) == 3;
+// ════════════════════════════════════════════════════════════════════════════
+//  M2：Zicsr 與 M 模式 trap
+// ════════════════════════════════════════════════════════════════════════════
 
-    let r2 = run([addi(1, 0, 3), 0xFFFFFFFF]);
-    assert cause(r2) == 2;
-    assert trap_pc(r2) == 4;
+/// 布局：[0] jal → main；handler 緊接在後（mtvec = 4）；
+/// main 開頭自動加 mtvec 設定（li(5,4) + csrw mtvec, x5）。
+fn with_handler(handler: _, main: _) -> [u32; IWORDS] {
+    let setup = concat(li(5, 4), [csrrw(0, 0x305, 5)]);
+    let m = concat(setup, main);
+    concat(concat([jal(0, 4 * (1 + len(handler)))], handler),
+           concat(m, [0; IWORDS - 1 - len(handler) - len(m)]))
+}
 
-    let r3 = run([addi(1, 0, 3)]);          // 後面全是 0 = 非法指令
-    assert cause(r3) == 2;
-    assert trap_pc(r3) == 4;
+/// 記錄型 handler：mepc → x1、mcause → x2、mtval → x3，然後結束模擬
+fn record_handler() -> [u32; 4] {
+    [csrr(1, 0x341), csrr(2, 0x342), csrr(3, 0x343), simexit()]
+}
 
-    let r4 = run([jal(0, 0)]);              // 原地跳 → 看門狗
-    assert cause(r4) == 2;
+// main 的第一條使用者指令位址：setup（li 2 條 + csrw 1 條）= idx 1+hlen+3
+// ecall/ebreak/非法指令都在 main 開頭 → pc = 4 * (hlen + 4)
 
-    let r5 = run([jal(0, 2000)]);           // 跳到指令記憶體之外
-    assert cause(r5) == 2;
-    assert trap_pc(r5) == 2000;
+test ecall_trap_enters_handler {
+    let r = run(with_handler(record_handler(), [ecall()]));
+    assert reg(r, 1) == 32;     // mepc = ecall 的 pc
+    assert reg(r, 2) == 11;     // mcause = M 模式 ecall
+    assert reg(r, 3) == 0;      // mtval = 0
+}
 
-    let r6 = run([addi(1, 0, 6), jalr(0, 1, 0)]);   // 目標 6 沒有 4 位元組對齊
-    assert cause(r6) == 2;
-    assert trap_pc(r6) == 6;
+test ebreak_trap {
+    let r = run(with_handler(record_handler(), [ebreak()]));
+    assert reg(r, 1) == 32;
+    assert reg(r, 2) == 3;      // mcause = breakpoint
+}
+
+test illegal_instruction_trap_records_mtval {
+    let r = run(with_handler(record_handler(), [0xFFFFFFFF]));
+    assert reg(r, 1) == 32;
+    assert reg(r, 2) == 2;
+    assert reg(r, 3) == 0xFFFFFFFF;     // mtval = 指令本身
+}
+
+test fetch_out_of_range_trap {
+    // main 在 pc 32；jal(0, 1968) → 目標 2000（越過指令記憶體）→ 非法指令陷阱
+    let r = run(with_handler(record_handler(), [jal(0, 1968)]));
+    assert reg(r, 2) == 2;
+    assert reg(r, 1) == 2000;   // mepc = 越界的取指位址
+}
+
+test misaligned_fetch_trap {
+    // jalr 到未對齊位址：Fetch 取得 inst = 0 → 非法指令陷阱（本實作以 cause 2 報告）
+    let r = run(with_handler(record_handler(), [addi(1, 0, 6), jalr(0, 1, 0)]));
+    assert reg(r, 2) == 2;
+    assert reg(r, 1) == 6;      // mepc = 未對齊的取指位址
+}
+
+/// mret：handler 記錄 mcause、把 mepc 推進 4、返回主程式繼續執行
+test mret_returns {
+    let handler = [csrr(2, 0x342), csrr(1, 0x341), addi(1, 1, 4), csrrw(0, 0x341, 1), mret()];
+    let r = run(with_handler(handler, [ecall(), addi(9, 0, 99), simexit()]));
+    assert reg(r, 9) == 99;     // mret 回到 ecall 的下一條（mepc + 4）
+    assert reg(r, 2) == 11;
+}
+
+/// mstatus 的 trap 進出：MIE[3]、MPIE[7]、MPP[12:11]
+test mstatus_trap_and_mret {
+    let handler = [csrr(1, 0x300), csrr(2, 0x341), addi(2, 2, 4), csrrw(0, 0x341, 2), mret()];
+    let main = [addi(4, 0, 8), csrrw(0, 0x300, 4), ecall(), csrr(5, 0x300), simexit()];
+    let r = run(with_handler(handler, main));
+    // UXL = SXL = 2（唯讀）恆在 bits 35:32
+    assert reg(r, 1) == 0xA00001880;   // trap 進入：MPIE = MIE(1)、MPP = 3、MIE = 0
+    assert reg(r, 5) == 0xA00000088;   // mret 之後：MIE = MPIE(1)、MPIE = 1、MPP = U（最低支援模式）
+}
+
+/// 向量模式：mtvec[1:0] = 1 只影響中斷（BASE + 4×cause）；同步例外一律跳 BASE
+test mtvec_vectored_trap {
+    let prog = concat([jal(0, 128)],                    // 0x00 → main @ 0x80
+        concat([nop(); 15],                             // idx 1..15
+        concat([addi(9, 0, 1)],                         // idx 16 = 0x40（BASE）
+        concat([nop(); 10],                             // idx 17..26
+        concat([csrr(2, 0x342), simexit()],             // idx 27..28 = 0x6C（cause 11 的向量位置）
+        concat([nop(); 3],                              // idx 29..31
+        concat(li(5, 0x41), [csrrw(0, 0x305, 5), ecall()])))))));   // idx 32..35
+    let r = run(prog);
+    assert reg(r, 2) == 11;
+    assert reg(r, 9) == 1;      // 從 BASE 進入（若跳向量位置，x9 不會被設）
+}
+
+/// 載入/儲存的未對齊與越界 → 例外（mcause 4/5/6/7，mtval = 故障位址）
+test load_store_faults {
+    let r1 = run(with_handler(record_handler(), [addi(6, 0, 2), lw(7, 6, 0)]));
+    assert reg(r1, 2) == 4;     // 載入位址未對齊
+    assert reg(r1, 3) == 2;     // mtval = 故障位址
+
+    let r2 = run(with_handler(record_handler(), concat(li(6, 0x10000), [lw(7, 6, 0)])));
+    assert reg(r2, 2) == 5;     // 載入存取錯誤（超出資料記憶體）
+    assert reg(r2, 3) == 0x10000;
+
+    let r3 = run(with_handler(record_handler(), [addi(6, 0, 2), sw(7, 6, 0)]));
+    assert reg(r3, 2) == 6;     // 儲存位址未對齊
+    assert reg(r3, 3) == 2;
+
+    let r4 = run(with_handler(record_handler(), concat(li(6, 0x10000), [sw(7, 6, 0)])));
+    assert reg(r4, 2) == 7;     // 儲存存取錯誤
+    assert reg(r4, 3) == 0x10000;
+}
+
+test csr_read_write {
+    let r = run([
+        addi(2, 0, 123),
+        csrrw(1, 0x340, 2),     // x1 = 舊值 0；mscratch = 123
+        csrrs(3, 0x340, 0),     // x3 = 123；rs1 = x0 → 不寫
+        addi(4, 0, 0xFF),
+        csrrs(5, 0x340, 4),     // x5 = 123；mscratch |= 0xFF
+        csrrc(6, 0x340, 4),     // x6 = 255；mscratch &= ~0xFF
+        csrr(7, 0x340),         // x7 = 0
+        simexit()]);
+    assert reg(r, 1) == 0;
+    assert reg(r, 3) == 123;
+    assert reg(r, 5) == 123;
+    assert reg(r, 6) == 255;
+    assert reg(r, 7) == 0;
+}
+
+test csr_immediate_forms {
+    let r = run([
+        csrrwi(1, 0x340, 5),    // x1 = 0；mscratch = 5
+        csrrsi(2, 0x340, 2),    // x2 = 5；mscratch = 7
+        csrrci(3, 0x340, 1),    // x3 = 7；mscratch = 6
+        csrr(4, 0x340),         // x4 = 6；zimm = 0 → 不寫
+        simexit()]);
+    assert reg(r, 1) == 0;
+    assert reg(r, 2) == 5;
+    assert reg(r, 3) == 7;
+    assert reg(r, 4) == 6;
+}
+
+test csr_protection {
+    // 寫唯讀 CSR（mhartid）→ 非法指令例外，mtval = 指令本身
+    let r = run(with_handler(record_handler(), [csrrw(8, 0xF14, 0)]));
+    assert reg(r, 2) == 2;
+    assert reg(r, 3) == csrrw(8, 0xF14, 0);
+}
+
+test csr_unknown_is_illegal {
+    let r = run(with_handler(record_handler(), [csrrw(8, 0x7FF, 0)]));
+    assert reg(r, 2) == 2;
+}
+
+test csr_ro_read_ok {
+    // csrrs with rs1 = x0 是純讀取，對唯讀 CSR 合法
+    let r = run([csrrs(9, 0xF14, 0), simexit()]);
+    assert reg(r, 9) == 0;      // mhartid = 0
+    assert cause(r) == 0;
+}
+
+test watchdog_stops_infinite_loop {
+    let r = run([jal(0, 0)]);   // 原地跳 → 看門狗 → cause 2 收尾
+    assert cause(r) == 2;
 }
 
 test reserved_encodings_are_illegal {
@@ -364,7 +498,8 @@ test reserved_encodings_are_illegal {
         enc_r(0, 1, 1, 2, 2, OP32),         // OP-32 只有 f3 = 0/1/5（f7 = 0）
         enc_r(1, 1, 1, 1, 2, OP32)];        // M32 只用 f3 = 0/4..7
     for k in 0..7 {
-        let r = run([bad[k]]);
-        assert cause(r) == 2, "reserved encoding accepted";
+        let r = run(with_handler(record_handler(), [bad[k]]));
+        assert reg(r, 2) == 2, "reserved encoding accepted";
+        assert reg(r, 3) == bad[k], "mtval should be the instruction word";
     }
 }
