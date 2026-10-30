@@ -4,7 +4,7 @@ Fluxa 的核心哲學必須徹底擺脫「軟體思維（馮紐曼架構的順�
 
 Fluxa **「融合了 Rust 的嚴謹型別、Go 的通道並行語意、以及硬體描述精確度的全新混合體」**。它不再試圖讓你在寫「軟體」，而是提供一個既有軟體的抽象便利性、又能完全掌控硬體空間與時間（時脈）的折衷點。
 
-本專案是一個 Fluxa 的模擬器，像 `iverilog` / `vvp` 之於 Verilog：這是 Fluxa 語言（見〈Fluxa 語言規格 v0.1〉）的直譯器與模擬器，零外部依賴，純 Rust。
+本專案是一個 Fluxa 的模擬器，像 `iverilog` / `vvp` 之於 Verilog：這是 Fluxa 語言（見 [〈Fluxa 語言規格 v0.1〉](_doc/Fluxa語言規格v0.1.md)）的直譯器與模擬器，零外部依賴，純 Rust。
 
 
 ## 建置與執行
@@ -16,8 +16,11 @@ cargo build --release
 ./target/release/fluxa examples/mac.fx --trace    # 印出每一次 send / recv
 ./target/release/fluxa examples/fir.fx --test fir_impulse
 ./target/release/fluxa examples/fir.fx --list
-cargo test --release                              # 範例回歸測試（含 100 次死結偵測重複測試）
+cargo test --release                              # 完整回歸測試：examples + rv32i + rv64（含 100 次死結偵測重複測試）
+./test.sh                                         # 建置 + cargo test + 兩個處理器腳本，一次跑完
 ```
+
+多檔載入：`fluxa a.fx b.fx` 會把多個檔案合併成一個程式（類似 `iverilog a.v b.v`），fn 名稱不可重複。
 
 結束碼：全部通過 0，有失敗 1，載入/語法錯誤 2。
 
@@ -57,6 +60,23 @@ cargo test --release                              # 範例回歸測試（含 100
 - **非阻塞通道操作**（`try_recv` / `empty`）在 task 層被禁止，因為它們會破壞 KPN 的確定性。
 - 一個 task 對應一條 OS 執行緒，數百個 PE 沒問題，數萬個就不適合；`print` 在多任務間的交錯順序不保證。
 
+## 處理器範例：用 Fluxa 寫 RISC-V
+
+兩顆以 Fluxa 寫成、每個管線階段是一個 task 的行為級處理器，同時也是本模擬器最大的壓力測試：
+
+| 目錄 | 內容 | 執行 | 說明 |
+|---|---|---|---|
+| `rv32i/` | RV32I 管線（Fetch / Decode / Execute / Mem 四個 task），內含以位寬型別檢查立即值的組譯器函式 | `./rv32i.sh` | [`rv32i/run.md`](rv32i/run.md)、[`_doc/v0.2.md`](_doc/v0.2.md) |
+| `rv64/` | RV64G（IMAFD + Zicsr）、M/S/U 特權模式、Sv39 MMU、計數器與 timer 中斷、整數精確的 IEEE-754 FPU，以及一個迷你 OS 系統測試 | `./rv64.sh` | [`_doc/v0.3.md`](_doc/v0.3.md) |
+
+`rv64/tests_fpu.fx` 是由 `python3 rv64/fpgen.py > rv64/tests_fpu.fx` 產生的 F/D 參考向量（固定亂數種子）。
+
+## 文件
+
+- [`_doc/Fluxa語言規格v0.1.md`](_doc/Fluxa語言規格v0.1.md)：語言規格（本模擬器依據的規範）
+- [`_doc/v0.1.md`](_doc/v0.1.md)、[`_doc/v0.2.md`](_doc/v0.2.md)、[`_doc/v0.3.md`](_doc/v0.3.md)：模擬器各版本的設計與變更紀錄
+- [`_doc/Fluxa發想-gemini.md`](_doc/Fluxa發想-gemini.md)、[`_doc/Fluxa設計報告-claude.md`](_doc/Fluxa設計報告-claude.md)：語言設計初期的發想與報告
+
 ## 專案結構
 
 ```
@@ -65,4 +85,7 @@ src/parser.rs   語法分析（規格 §2） src/interp.rs   樹走訪直譯器
 src/ast.rs      語法樹            src/value.rs    值、型別、定點數與範圍檢查
 src/lib.rs      load / run_test   src/main.rs     命令列
 examples/       basics fir mac gemm fanout，以及 err_* 四個預期失敗的範例
+rv32i/ rv64/    RISC-V 處理器範例（見上）
+tests/          回歸測試（examples.rs 驅動上述所有 .fx）
+_doc/           語言規格與版本紀錄
 ```

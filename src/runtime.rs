@@ -80,9 +80,7 @@ pub struct Shared {
 
 impl Shared {
     pub fn new(program: Arc<Program>, trace: bool) -> Arc<Shared> {
-        let mut w = World::default();
-        w.next_task = 1;
-        w.live = 1; // 任務 0 = test 主體
+        let mut w = World { next_task: 1, live: 1, ..Default::default() }; // 任務 0 = test 主體
         w.task_names.insert(0, "test".to_string());
         Arc::new(Shared {
             world: Mutex::new(w),
@@ -122,7 +120,7 @@ impl Shared {
                 self.cv.notify_all();
                 return r;
             }
-            let reason = why(&*w);
+            let reason = why(&w);
             w.waiting.insert(task, reason);
             w.blocked += 1;
             let my_epoch = w.epoch;
@@ -170,23 +168,20 @@ impl Shared {
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
                 let r = f(id);
-                match r {
-                    Err(RtErr::Msg(line, m)) => {
-                        let mut w = sh.lock();
-                        if w.error.is_none() {
-                            let name = w.task_names.get(&id).cloned().unwrap_or_default();
-                            w.error = Some(format!(
-                                "{}: runtime error in task `{}`: {}",
-                                sh.program.loc(line), name, m
-                            ));
-                        }
-                        w.shutdown = true;
-                        w.bump();
-                        drop(w);
-                        sh.stop.store(true, Ordering::Relaxed);
-                        sh.cv.notify_all();
+                if let Err(RtErr::Msg(line, m)) = r {
+                    let mut w = sh.lock();
+                    if w.error.is_none() {
+                        let name = w.task_names.get(&id).cloned().unwrap_or_default();
+                        w.error = Some(format!(
+                            "{}: runtime error in task `{}`: {}",
+                            sh.program.loc(line), name, m
+                        ));
                     }
-                    _ => {}
+                    w.shutdown = true;
+                    w.bump();
+                    drop(w);
+                    sh.stop.store(true, Ordering::Relaxed);
+                    sh.cv.notify_all();
                 }
                 sh.task_done(id);
             })

@@ -174,7 +174,7 @@ impl Interp {
     }
     fn eval_usize(&mut self, e: &Expr) -> R<usize> {
         let n = self.eval_int(e)?;
-        if n < 0 || n > 100_000_000 {
+        if !(0..=100_000_000).contains(&n) {
             return self.err(format!("size {} out of range", n));
         }
         Ok(n as usize)
@@ -376,12 +376,11 @@ impl Interp {
                             self.iter_body(pat, x, body, is_unroll)?;
                         }
                     }
-                    Value::Rx(ch) => loop {
-                        match self.sh.recv(self.task, ch, s.line)? {
-                            Some(v) => self.iter_body(pat, v, body, is_unroll)?,
-                            None => break,
+                    Value::Rx(ch) => {
+                        while let Some(v) = self.sh.recv(self.task, ch, s.line)? {
+                            self.iter_body(pat, v, body, is_unroll)?;
                         }
-                    },
+                    }
                     other => return self.err(format!("cannot iterate over {}", kind(&other))),
                 }
                 Ok(())
@@ -916,7 +915,7 @@ impl Interp {
                 let vals = self.eval_args(args)?;
                 let mut depth = 2usize;
                 for (n, v) in &vals {
-                    if n.as_deref().map_or(true, |n| n == "depth") {
+                    if n.as_deref().is_none_or(|n| n == "depth") {
                         match v {
                             Value::Int(d) if *d >= 1 && *d <= 1_000_000 => depth = *d as usize,
                             other => return self.err(format!("invalid channel depth {}", other)),

@@ -33,7 +33,7 @@ pub fn parse_program_at(file: &str, src: &str, file_idx: u32) -> Res<Program> {
         if p.is_eof() {
             break;
         }
-        if p.eat_kw("pub") {}
+        p.eat_kw("pub");
         let line = p.line();
         let kw = match p.peek().clone() {
             Tok::Ident(s) => s,

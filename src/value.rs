@@ -84,10 +84,9 @@ pub fn signed_type(n: u32) -> RtType {
 pub fn parse_int_type(name: &str) -> Option<RtType> {
     let (signed, rest) = if let Some(r) = name.strip_prefix('u') {
         (false, r)
-    } else if let Some(r) = name.strip_prefix('i') {
-        (true, r)
     } else {
-        return None;
+        let r = name.strip_prefix('i')?;
+        (true, r)
     };
     if rest.is_empty() || !rest.bytes().all(|c| c.is_ascii_digit()) {
         return None;

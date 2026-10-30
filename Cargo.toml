@@ -1,8 +1,11 @@
 [package]
 name = "fluxa"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
+rust-version = "1.82"
 description = "Behavioral simulator (Kahn process network interpreter) for the Fluxa HLS language"
+repository = "https://github.com/ccc-eda/fluxa"
+readme = "README.md"
 
 [lib]
 name = "fluxa"
