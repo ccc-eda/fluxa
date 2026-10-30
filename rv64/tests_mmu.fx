@@ -12,21 +12,7 @@
 
 // sys / boot / mrec / srec 與 mstatus 常數在 rv64.fx 的 harness 區（各測試檔共用）
 
-// ── 頁表映像 ──
-fn pte(pa: u64, flags: u64) -> u64 { ((pa >> 12) << 10) | flags }
-fn poke(img: [u64; DWORDS], addr: u64, v: u64) -> [u64; DWORDS] {
-    let mut o = img;
-    o[addr >> 3] = v;
-    o
-}
-/// 三層頁表骨架：root[0] → L1、L1[0] → L0、L0[0] = 頁 0 的葉（旗標 f0）
-fn pt(f0: u64) -> [u64; DWORDS] {
-    let m0: [u64; DWORDS] = [0; DWORDS];
-    poke(poke(poke(m0, 0x1000, pte(0x2000, PTE_V)), 0x2000, pte(0x3000, PTE_V)), 0x3000, pte(0, f0))
-}
-fn l0(img: [u64; DWORDS], vpn0: u64, pa: u64, f: u64) -> [u64; DWORDS] { poke(img, 0x3000 + 8 * vpn0, pte(pa, f)) }
-fn l1(img: [u64; DWORDS], vpn1: u64, pa: u64, f: u64) -> [u64; DWORDS] { poke(img, 0x2000 + 8 * vpn1, pte(pa, f)) }
-fn l2(img: [u64; DWORDS], vpn2: u64, pa: u64, f: u64) -> [u64; DWORDS] { poke(img, 0x1000 + 8 * vpn2, pte(pa, f)) }
+// 頁表映像 helper（pte / poke / pt / l0 / l1 / l2）在 rv64.fx 的 harness 區
 
 // ════════════════════════════════════════════════════════════════════════════
 //  特權模式與委派

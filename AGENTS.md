@@ -13,7 +13,7 @@ cargo build --release
 ./target/release/fluxa examples/mac.fx --trace      # print every send/recv
 ./target/release/fluxa examples/gemm.fx --stats     # per-channel token counts / max FIFO occupancy
 ./rv32i.sh                                          # RV32I core example: rv32i.fx + smoke.fx + tests_basic.fx
-./rv64.sh                                           # RV64G core (v0.3 M6: RV64IMAFD + Zicsr + M/S/U + Sv39 + counters/timer interrupts): rv64.fx + fpu.fx + each tests_*.fx
+./rv64.sh                                           # RV64G core (v0.3 M6: RV64IMAFD + Zicsr + M/S/U + Sv39 + counters/timer interrupts): rv64.fx + fpu.fx + each tests_*.fx (109 tests); design + per-milestone notes in _doc/v0.3.md
 python3 rv64/fpgen.py > rv64/tests_fpu.fx          # regenerate F/D reference vectors (deterministic seed)
 cargo test --release                                # example regression suite
 ```
