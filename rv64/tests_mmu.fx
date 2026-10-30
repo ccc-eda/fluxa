@@ -104,7 +104,7 @@ test medeleg_warl {
     // medeleg bit 11（M 模式 ecall）不可委派
     let r = run(concat(li(5, 0xFFFF), [csrrw(0, 0x302, 5), csrr(7, 0x302), csrr(8, 0x301), simexit()]));
     assert reg(r, 7) == 0xB3FF;
-    assert reg(r, 8) == 0x8000000000141101;  // misa：RV64 I M A S U
+    assert reg(r, 8) == 0x8000000000141129;  // misa：RV64 I M A F D S U
 }
 
 test csr_privilege_levels {

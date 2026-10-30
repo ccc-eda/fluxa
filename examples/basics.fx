@@ -54,3 +54,15 @@ test registers_commit_at_iteration_end {
     }
     assert seen == [0, 0, 0, 1];
 }
+
+/// 大移位量：右移超過寬度 = 0（負數 = -1，即 floor 語意）；0 左移任何量 = 0
+test wide_shifts {
+    let x: u120 = 1 << 119;
+    let n: u32 = 200;
+    assert (x >> n) == 0;
+    assert (x >> 119) == 1;
+    let m: i32 = -5;
+    assert (m >> n) == -1;
+    let z: u8 = 0;
+    assert (z << n) == 0;
+}

@@ -595,16 +595,24 @@ fn int_op(op: BinOp, x: i128, y: i128) -> Result<i128, String> {
             x % y
         }
         Shl => {
-            if !(0..120).contains(&y) {
+            if y < 0 {
                 return Err(format!("invalid shift amount {}", y));
             }
-            x.checked_mul(pow2(y as u32)).ok_or_else(ov)?
+            // 0 << n 對任何 n 都是 0；其餘超過精確整數寬度的移位必然溢位
+            if x == 0 {
+                0
+            } else if y >= 120 {
+                return Err(ov());
+            } else {
+                x.checked_mul(pow2(y as u32)).ok_or_else(ov)?
+            }
         }
         Shr => {
-            if !(0..127).contains(&y) {
+            if y < 0 {
                 return Err(format!("invalid shift amount {}", y));
             }
-            x >> y
+            // 算術右移 = floor(x / 2^y)：移位量超過寬度時結果是 0 或 -1
+            x >> y.min(127)
         }
         BitAnd => x & y,
         BitOr => x | y,
