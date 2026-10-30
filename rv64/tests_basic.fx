@@ -357,17 +357,28 @@ test illegal_instruction_trap_records_mtval {
 }
 
 test fetch_out_of_range_trap {
-    // main 在 pc 32；jal(0, 1968) → 目標 2000（越過指令記憶體）→ 非法指令陷阱
+    // main 在 pc 32；jal(0, 1968) → 目標 2000（越過指令 ROM）→ 取指存取錯誤（cause 1）
     let r = run(with_handler(record_handler(), [jal(0, 1968)]));
-    assert reg(r, 2) == 2;
+    assert reg(r, 2) == 1;
     assert reg(r, 1) == 2000;   // mepc = 越界的取指位址
+    assert reg(r, 3) == 2000;
 }
 
-test misaligned_fetch_trap {
-    // jalr 到未對齊位址：Fetch 取得 inst = 0 → 非法指令陷阱（本實作以 cause 2 報告）
-    let r = run(with_handler(record_handler(), [addi(1, 0, 6), jalr(0, 1, 0)]));
-    assert reg(r, 2) == 2;
-    assert reg(r, 1) == 6;      // mepc = 未對齊的取指位址
+/// 跳躍目標未對齊（IALIGN = 32）：例外報在跳躍指令上（mepc = 跳躍指令、mtval = 目標）
+test misaligned_jump_target_trap {
+    let r1 = run(with_handler(record_handler(), [addi(1, 0, 6), jalr(0, 1, 0)]));
+    assert reg(r1, 2) == 0;
+    assert reg(r1, 1) == 36;    // jalr 的 pc
+    assert reg(r1, 3) == 6;
+    let r2 = run(with_handler(record_handler(), [jal(0, 2)]));
+    assert reg(r2, 2) == 0;
+    assert reg(r2, 1) == 32;
+    assert reg(r2, 3) == 34;
+    // 分支：只有成立時才檢查目標
+    let r3 = run(with_handler(record_handler(), [bne(0, 0, 6), beq(0, 0, 6)]));
+    assert reg(r3, 2) == 0;
+    assert reg(r3, 1) == 36;
+    assert reg(r3, 3) == 42;
 }
 
 /// mret：handler 記錄 mcause、把 mepc 推進 4、返回主程式繼續執行
@@ -490,4 +501,18 @@ test reserved_encodings_are_illegal {
         assert reg(r, 2) == 2, "reserved encoding accepted";
         assert reg(r, 3) == bad[k], "mtval should be the instruction word";
     }
+}
+
+/// 連續 30 個互不相依的寫回（含 CSR 讀取這種停等型指令），寫回深度只有 2：
+/// Decode 的在途寫回上限保證不死結（rv32i 的 err_wb_depth.fx 示範的是沒有上限時的死結）
+test independent_writes_exceed_wb_depth {
+    let mut p = [];
+    for k in 1..31 {
+        p = concat(p, if k % 3 == 0 { [csrr(k, 0xF14)] } else { [addi(k, 0, k)] });
+    }
+    let a = run_img_small(image(concat(p, [simexit()])), dimage([]));
+    assert cause(a) == 0;
+    assert reg(a, 1) == 1;
+    assert reg(a, 29) == 29;
+    assert reg(a, 30) == 0;
 }

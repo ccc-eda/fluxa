@@ -10,40 +10,7 @@
 //   0x0000 資料頁   0x1000 根頁表（L2）   0x2000 L1 頁表   0x3000 L0 頁表
 // 預設映射：VA 0x0000 頁 → PA 0（取指時是 ROM 第 0 頁、載存時是 RAM 資料頁）
 
-const MST_S: u32 = 0x800;               // mstatus.MPP = S
-const MST_M: u32 = 0x1800;              // mstatus.MPP = M
-const SUM: u32 = 0x40000;
-const MXR: u32 = 0x80000;
-const MPRV: u32 = 0x20000;
-const TVM: u32 = 0x100000;
-const TSR: u32 = 0x400000;
-const SV39: u32 = 0x80000000;           // satp 高 32 位：MODE = 8
-const ROOT: u32 = 1;                    // satp.PPN：根頁表在 PA 0x1000
-const RWXAD: u64 = 0xCF;                // V R W X A D
-const RWAD: u64 = 0xC7;                 // V R W A D
-
-fn pad(p: _, n: u32) { concat(p, [0; n - len(p)]) }
-
-fn sys(mh: _, sh: _, boot: _, payload: _) {
-    concat(concat([jal(0, 0x100)], pad(mh, 31)),
-           concat(pad(sh, 32), concat(pad(boot, 64), payload)))
-}
-
-/// boot：mtvec = 4、stvec = 0x80、medeleg、satp = (hi:lo)、mstatus = mst、mepc = entry → mret
-fn boot(mst: u32, satp_hi: u32, satp_lo: u32, deleg: u32, entry: u32) {
-    concat(li(5, 4), concat([csrrw(0, 0x305, 5)],
-    concat(li(5, 0x80), concat([csrrw(0, 0x105, 5)],
-    concat(li(5, deleg), concat([csrrw(0, 0x302, 5)],
-    concat(li64(5, satp_hi, satp_lo), concat([csrrw(0, 0x180, 5), sfence_vma(0, 0)],
-    concat(li(5, mst), concat([csrrw(0, 0x300, 5)],
-    concat(li(5, entry), [csrrw(0, 0x341, 5), mret()])))))))))))
-}
-fn boot_bare(mst: u32, deleg: u32) { boot(mst, 0, 0, deleg, 0x200) }
-fn boot_vm(mst: u32, deleg: u32) { boot(mst, SV39, ROOT, deleg, 0x200) }
-
-/// 記錄型 handler：epc → x1、cause → x2、tval → x3、status → x4，然後結束模擬
-fn mrec() -> [u32; 5] { [csrr(1, 0x341), csrr(2, 0x342), csrr(3, 0x343), csrr(4, 0x300), simexit()] }
-fn srec() -> [u32; 5] { [csrr(1, 0x141), csrr(2, 0x142), csrr(3, 0x143), csrr(4, 0x100), simexit()] }
+// sys / boot / mrec / srec 與 mstatus 常數在 rv64.fx 的 harness 區（各測試檔共用）
 
 // ── 頁表映像 ──
 fn pte(pa: u64, flags: u64) -> u64 { ((pa >> 12) << 10) | flags }
