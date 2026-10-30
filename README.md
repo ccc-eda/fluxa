@@ -89,3 +89,7 @@ rv32i/ rv64/    RISC-V 處理器範例（見上）
 tests/          回歸測試（examples.rs 驅動上述所有 .fx）
 _doc/           語言規格與版本紀錄
 ```
+
+## 授權
+
+MIT，見 [LICENSE](LICENSE)。
